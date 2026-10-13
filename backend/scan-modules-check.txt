@@ -1,0 +1,17 @@
+C:\Users\Jashu\OneDrive\Desktop\Warranto\backend\lib\scanService.js:52
+    required(
+    ^
+
+ReferenceError: body is not defined
+    at Object.createProductRules (C:\Users\Jashu\OneDrive\Desktop\Warranto\backend\lib\scanService.js:52:5)
+    at Object.<anonymous> (C:\Users\Jashu\OneDrive\Desktop\Warranto\backend\routes\scanRoutes.js:72:27)
+    at Module._compile (node:internal/modules/cjs/loader:1872:14)
+    at Object..js (node:internal/modules/cjs/loader:2003:10)
+    at Module.load (node:internal/modules/cjs/loader:1594:32)
+    at Module._load (node:internal/modules/cjs/loader:1396:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.require (node:internal/modules/cjs/loader:1617:12)
+    at require (node:internal/modules/helpers:153:16)
+    at [eval]:1:42
+
+Node.js v24.19.0

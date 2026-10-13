@@ -1,0 +1,297 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+
+  /* Surfaces */
+  --color-canvas: #0b0d10;
+  --color-surface: #111418;
+  --color-surface-2: #171b21;
+  --color-line: #252a31;
+  --color-line-strong: #2e3540;
+
+  /* Text */
+  --color-ink: #f1f3f5;
+  --color-ink-soft: #cdd3da;
+  --color-muted: #8b939e;
+
+  /* Primary blue */
+  --color-brand-50: #131a2c;
+  --color-brand-100: #1b2542;
+  --color-brand-200: #26325a;
+  --color-brand-300: #3a4e8f;
+  --color-brand-400: #6e93ff;
+  --color-brand-500: #4f7cff;
+  --color-brand-600: #3f6be8;
+  --color-brand-700: #3358cc;
+  --color-brand-800: #2847a8;
+  --color-brand-900: #1e3780;
+
+  /* Bright premium palette */
+  --color-navy-deep: #06132E;
+  --color-navy-2: #0A1D46;
+  --color-blue-bright: #3478FF;
+  --color-cyan: #36C5FF;
+  --color-purple: #805BFF;
+  --color-white: #FFFFFF;
+  --color-secondary-text: #D2DDF2;
+
+  /* Landing page helper tokens (progressive enhancement, Tailwind classes take precedence)
+     Kept minimal so the desktop hero targets a balanced layout without CSS hacks. */
+  --landing-max-width: 1320px;
+  --landing-hero-balance: 48%;
+  --landing-hero-min-gap: 64px;
+  --color-navy-900: #0a1426;
+  --color-navy-800: #0c182e;
+  --color-navy-700: #0e1c36;
+
+  /* Dark navy */
+  --color-navy-950: #070a13;
+
+  /* Status */
+  --color-success-50: #131a16;
+  --color-success-100: #17221a;
+  --color-success-500: #3fb950;
+  --color-success-600: #36a846;
+  --color-success-700: #58cc68;
+
+  --color-warning-50: #1d1912;
+  --color-warning-100: #241f15;
+  --color-warning-400: #d9a441;
+  --color-warning-500: #d9a441;
+  --color-warning-600: #c4913a;
+  --color-warning-700: #e2b45c;
+
+  --color-danger-50: #1c1415;
+  --color-danger-100: #241a1b;
+  --color-danger-500: #d95c5c;
+  --color-danger-600: #b84a4a;
+  --color-danger-700: #e47b7b;
+
+  /* Shadows — restrained, surfaces are mostly solid */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-raised: 0 6px 20px -8px rgb(0 0 0 / 0.55);
+  --shadow-modal: 0 24px 60px -12px rgb(0 0 0 / 0.65);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background-color: rgb(79 124 255 / 0.32);
+  color: var(--color-ink);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Subtle scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+/* Animations -------------------------------------------------- */
+
+@keyframes wnt-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes wnt-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wnt-slide-in-right {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes wnt-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wnt-shimmer {
+  from {
+    background-position: -400px 0;
+  }
+  to {
+    background-position: 400px 0;
+  }
+}
+
+@keyframes wnt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Landing hero: a barely-there vertical drift for the floating composition.
+   Disabled automatically by the reduced-motion rules below. */
+@keyframes wnt-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+.anim-float {
+  animation: wnt-float 7s ease-in-out infinite;
+}
+
+.anim-float-slow {
+  animation: wnt-float 9s ease-in-out infinite;
+}
+
+.anim-fade-in {
+  animation: wnt-fade-in 0.25s ease-out both;
+}
+
+.anim-slide-up {
+  animation: wnt-slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-slide-in-right {
+  animation: wnt-slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-pop-in {
+  animation: wnt-pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.skeleton {
+  background-color: #171b21;
+  background-image: linear-gradient(90deg, #171b21 0px, #1e242b 120px, #171b21 240px);
+  background-size: 400px 100%;
+  animation: wnt-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+.spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: wnt-spin 0.7s linear infinite;
+}
+
+.spinner-brand {
+  border-color: var(--color-line-strong);
+  border-top-color: var(--color-brand-500);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* User preference toggled from Settings → Preferences */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

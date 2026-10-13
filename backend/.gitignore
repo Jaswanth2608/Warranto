@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Environment files — real credentials never go into Git
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Locally stored bill files (development driver) — never committed
+storage/
+
+# OS files
+.DS_Store

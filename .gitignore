@@ -1,0 +1,21 @@
+# Dependencies and build output (each app also has its own .gitignore)
+node_modules/
+dist/
+dist-ssr/
+
+# Environment files — real credentials never go into Git.
+# Only the .env.example templates are committed.
+.env
+.env.local
+.env.*.local
+
+# Locally stored bill files (used only by the local storage driver)
+backend/storage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / tooling metadata
+.freebuff/
+.DS_Store

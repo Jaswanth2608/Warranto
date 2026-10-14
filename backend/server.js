@@ -50,29 +50,22 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 
 // CORS. CLIENT_URL may list several comma-separated origins so a deployment
 // can allow the Vercel frontend and keep a local origin for smoke tests.
-// Set CLIENT_URL to the deployed frontend origin in Render.
+// Set CLIENT_URL to the deployed frontend origin in Render. Entries may contain
+// `*` as a wildcard (e.g. `https://*.vercel.app`) to allow the production alias
+// and every preview deployment at once — see lib/corsOrigins.js.
 // Requests without an Origin header (curl, Postman, tests) are always allowed.
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173'
-const allowedOrigins = String(CLIENT_URL)
-  .split(',')
-  .map((origin) => origin.trim().replace(/\/$/, ''))
-  .filter(Boolean)
+const {
+  buildOriginMatcher,
+} = require('./lib/corsOrigins')
 
-// Local origins are only relevant outside production:
-// 5173 = `npm run dev`, 4173 = `npm run preview` (production build served locally).
-if (process.env.NODE_ENV !== 'production') {
-  allowedOrigins.push(
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:4173',
-    'http://127.0.0.1:4173',
-  )
-}
+const { isAllowedOrigin } = buildOriginMatcher(process.env.CLIENT_URL || 'http://localhost:5173', {
+  isProduction: process.env.NODE_ENV === 'production',
+})
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
+      if (!origin || isAllowedOrigin(origin)) return callback(null, true)
       return callback(null, false)
     },
     // Authentication uses a Bearer JWT in the Authorization header — the app

@@ -241,9 +241,21 @@ CLIENT_URL=https://<your-vercel-app>.vercel.app
 ```
 
 Several origins may be comma-separated, which is handy for keeping a preview domain working:
-`https://app.vercel.app,https://app-git-main.vercel.app`. Local `http://localhost:5173` stays
-allowed outside production automatically. After changing `CLIENT_URL`, let Render redeploy/restart:
-an unlisted origin is rejected by CORS and appears in the browser as a blocked request.
+`https://app.vercel.app,https://app-git-main.vercel.app`. An entry may also contain `*` as a
+wildcard, which matches any characters except `/` — so one line allows the production alias **and**
+every preview deployment:
+
+```
+CLIENT_URL=https://warranto.vercel.app,https://*.vercel.app
+```
+
+> Which origin is actually live on Vercel matters: the production alias (`https://<project>.vercel.app`)
+> and the branch preview (`https://<project>-git-main-<user>.vercel.app`) are **different origins**.
+> List both, or use `https://*.vercel.app`, otherwise the unlisted one is blocked by CORS.
+
+Local `http://localhost:5173` stays allowed outside production automatically. After changing
+`CLIENT_URL`, let Render redeploy/restart: an unlisted origin is rejected by CORS and appears in the
+browser as a blocked request.
 
 ### 5. File storage
 
@@ -268,7 +280,15 @@ Email is off until SMTP is configured: with `MAIL_MODE` unset the scheduler logs
 every other feature keeps working. To enable it, set `MAIL_MODE=smtp` plus the `SMTP_*` variables on
 Render and restart. The scheduler (`node-cron`, default `*/30 * * * *`) then sends due milestones
 once each (idempotent per reminder, tracked by `notifiedAt`). `POST /api/reminders/email/send-test/:id`
-(authenticated, own reminders only) sends a single reminder for a pre-flight check.
+(authenticated, own reminders only) sends a single reminder for a pre-flight check. It answers `200`
+with `sent: false` and a described `error` when the provider refuses the message, so a transport
+problem is reported instead of looking like a database error.
+
+With a Gmail account the settings are `MAIL_MODE=smtp`, `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`,
+`SMTP_SECURE=false`, `SMTP_USER=<gmail address>` and `SMTP_PASS=<16-character App Password>`. Gmail
+rejects your normal account password, so turn on 2-Step Verification and create an App Password
+(Google Account → Security → App passwords) first. Failed sends are recorded on the reminder
+(`notificationStatus`, `lastNotificationError`) and logged without the recipient address.
 
 ⚠️ The scheduler only runs **while the Render instance is awake**. Free instances sleep after
 ~15 minutes idle, so scheduled sends are best-effort there — keep the instance warm with an external

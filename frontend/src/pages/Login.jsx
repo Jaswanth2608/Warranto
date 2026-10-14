@@ -113,7 +113,7 @@ export function Login() {
               onChange={update('email')}
               error={Boolean(errors.email)}
               disabled={busy}
-              className="pl-9"
+              size="lg" className="pl-9"
             />
           </div>
         </Field>
@@ -134,7 +134,7 @@ export function Login() {
               onChange={update('password')}
               error={Boolean(errors.password)}
               disabled={busy}
-              className="pl-9 pr-10"
+              size="lg" className="pl-9 pr-10"
             />
             <button
               type="button"

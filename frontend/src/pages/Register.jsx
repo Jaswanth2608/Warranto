@@ -140,7 +140,7 @@ export function Register() {
               onChange={update('fullName')}
               error={Boolean(errors.fullName)}
               disabled={busy}
-              className="pl-9"
+              size="lg" className="pl-9"
             />
           </div>
         </Field>
@@ -161,7 +161,7 @@ export function Register() {
               onChange={update('email')}
               error={Boolean(errors.email)}
               disabled={busy}
-              className="pl-9"
+              size="lg" className="pl-9"
             />
           </div>
         </Field>
@@ -182,7 +182,7 @@ export function Register() {
               onChange={update('password')}
               error={Boolean(errors.password)}
               disabled={busy}
-              className="pl-9 pr-10"
+              size="lg" className="pl-9 pr-10"
             />
             <button
               type="button"
@@ -236,7 +236,7 @@ export function Register() {
               onChange={update('confirmPassword')}
               error={Boolean(errors.confirmPassword)}
               disabled={busy}
-              className="pl-9"
+              size="lg" className="pl-9"
             />
           </div>
         </Field>

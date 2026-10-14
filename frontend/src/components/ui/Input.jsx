@@ -36,8 +36,16 @@ export function Field({ label, htmlFor, hint, error, required = false, children,
   )
 }
 
-export function Input({ className = '', error = false, ...props }) {
-  return <input className={controlClass(error, `h-9 ${className}`)} {...props} />
+// Control heights. "md" is the app-wide default; "lg" matches the lg Button so
+// a form whose primary action is a large button lines up exactly (auth pages).
+const INPUT_SIZES = {
+  md: 'h-9',
+  lg: 'h-10',
+}
+
+export function Input({ className = '', error = false, size = 'md', ...props }) {
+  const height = INPUT_SIZES[size] ?? INPUT_SIZES.md
+  return <input className={controlClass(error, `${height} ${className}`)} {...props} />
 }
 
 export function Textarea({ className = '', error = false, rows = 4, ...props }) {

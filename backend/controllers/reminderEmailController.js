@@ -1,7 +1,15 @@
 'use strict'
 
 const mongoose = require('mongoose')
-const { sendReminder, prepareReminder, getMailMode, isSmtpConfigured, makeTransporter, env } = require('../lib/reminderScheduler')
+const {
+  sendReminder,
+  prepareReminder,
+  getMailMode,
+  isSmtpConfigured,
+  makeTransporter,
+  maskEmails,
+  env,
+} = require('../lib/reminderScheduler')
 const Reminder = require('../models/Reminder')
 const { ApiError } = require('../middleware/errorMiddleware')
 
@@ -10,8 +18,13 @@ const { ApiError } = require('../middleware/errorMiddleware')
  *
  * Sends a single reminder outside the scheduled job. Useful for verifying the
  * email provider is wired up correctly. It is still subject to the same
- * idempotency rules as the scheduler: a reminder that has already been notified
- * or that fails eligibility checks is not sent again.
+ * eligibility rules as the scheduler (prepareReminder): a reminder that has
+ * already been notified, whose product is gone, whose warranty has expired, or
+ * whose owner has no valid e-mail address is refused with a reason rather than
+ * being sent.
+ *
+ * A manual test send never marks the reminder as notified, so it cannot swallow
+ * the real scheduled reminder.
  *
  * Requires authentication (see reminderEmailRoutes.js) and only ever looks at
  * the current user's reminders — a foreign or unknown id answers 404, so ids
@@ -38,10 +51,42 @@ exports.sendTestReminder = async (req, res, next) => {
       throw new ApiError(404, 'Reminder not found.')
     }
 
-    const outcome = await sendReminder(reminder, {
+    // Same eligibility gate as the scheduled path: never send for a deleted
+    // product, an expired warranty, an already-notified reminder, or a user
+    // without a valid address.
+    const prepared = await prepareReminder(reminder)
+    if (!prepared.ok) {
+      console.warn(
+        `[reminder] Manual send refused for reminder ${reminder._id}: ${maskEmails(prepared.reason)}`,
+      )
+      return res.json({
+        success: true,
+        reminderId: prepared.reminderId,
+        sent: false,
+        messageId: null,
+        accepted: null,
+        rejected: null,
+        error: prepared.reason,
+      })
+    }
+
+    const recipient = env('MAIL_TEST_TO') || prepared.reminder.userEmail
+    const outcome = await sendReminder(prepared.reminder, {
       transporter: makeTransporter(),
       testRecipient: env('MAIL_TEST_TO') || null,
     })
+
+    if (outcome.ok) {
+      console.log(
+        `[reminder] Manual test e-mail accepted for reminder ${reminder._id} → ${maskEmails(recipient)}`,
+      )
+    } else {
+      console.error(
+        `[reminder] Manual test e-mail failed for reminder ${reminder._id}: ${maskEmails(
+          outcome.error || outcome.reason || 'unknown error',
+        )}`,
+      )
+    }
 
     return res.json({
       success: true,

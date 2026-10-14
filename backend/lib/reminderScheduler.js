@@ -49,6 +49,9 @@ const { parseYMD, toYMD, daysBetween, startOfDay } = require('../utils/warranty'
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 
+/** Handle of the single running cron task (see startScheduler). */
+let schedulerHandle = null
+
 function env(name, fallback = '') {
   const value = process.env[name]
   return value == null ? fallback : String(value).trim()
@@ -76,6 +79,52 @@ function getTestRecipient() {
   return env('MAIL_TEST_TO') || null
 }
 
+/**
+ * Masks e-mail addresses inside a log line so operational logs stay useful
+ * without printing personal data.
+ */
+function maskEmails(text) {
+  return String(text == null ? '' : text).replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, 'user@domain.example')
+}
+
+/**
+ * Builds a readable, secret-free description of a mail transport failure.
+ *
+ * nodemailer can reject with an AggregateError whose `message` is empty (for
+ * example a dual-stack ECONNREFUSED on "localhost"), so falling back to
+ * error.message alone records an empty reason and hides the real problem.
+ */
+function describeMailError(error) {
+  if (!error) return 'Unknown mail transport error.'
+
+  const name = String(error.name || 'Error').trim() || 'Error'
+  const code = [error.code, error.originalCode]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .join('/')
+  const message = typeof error.message === 'string' ? error.message.trim() : ''
+
+  // Prefer the real message, then the inner errors of an AggregateError, then
+  // the stack header (which carries the errno for connect failures).
+  let detail = message
+  if (!detail && Array.isArray(error.errors) && error.errors.length) {
+    detail = error.errors
+      .filter(Boolean)
+      .map((inner) => String(inner.message || inner.code || '').trim())
+      .filter(Boolean)
+      .join('; ')
+  }
+  if (!detail && typeof error.stack === 'string') {
+    detail = error.stack.split('\n')[0].replace(/^[A-Za-z]*Error\b\s*/, '').replace(/^:\s*/, '').trim()
+  }
+
+  const parts = [name]
+  if (code) parts.push(`(${code})`)
+  if (detail) parts.push(detail)
+
+  const described = parts.join(' ').trim()
+  return described || 'Unknown mail transport error.'
+}
+
 function makeTransporter() {
   if (!isSmtpConfigured()) {
     return null
@@ -90,14 +139,15 @@ function makeTransporter() {
     rawSecure === 'false' || rawSecure === '0'
       ? false
       : true
-  if (!isNaN(port) && port === 465 && !secure) {
+  const port = parseInt(env('SMTP_PORT'), 10)
+
+  if (!Number.isNaN(port) && port === 465 && !secure) {
     console.warn(
       '[reminder] SMTP_PORT=465 is normally used with TLS. Set SMTP_SECURE=true',
       'or pick a different port (for example 587 with SMTP_SECURE=false) to',
       'avoid connection failures.',
     )
   }
-  const port = parseInt(env('SMTP_PORT'), 10)
 
   return nodemailer.createTransport({
     host: env('SMTP_HOST'),
@@ -107,6 +157,11 @@ function makeTransporter() {
       user: env('SMTP_USER'),
       pass: env('SMTP_PASS'),
     },
+    // Bounded timeouts: a dead or unreachable SMTP host must fail a send
+    // attempt quickly instead of blocking the scheduler tick indefinitely.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
     logger: false,
   })
 }
@@ -119,18 +174,37 @@ async function sanitizeProductForSend(product) {
   return product
 }
 
+/** local@domain.tld — rejects empty local parts and domains without a dot. */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function isValidEmailAddress(value) {
+  return typeof value === 'string' && EMAIL_PATTERN.test(value.trim())
+}
+
 async function userEligibleForEmail(userId) {
   const user = await User.findById(userId).lean()
   if (!user) return { ok: false, reason: 'User not found.' }
   if (!user.email) return { ok: false, reason: 'User has no email address.' }
-  if (typeof user.email !== 'string' || !user.email.includes('@')) {
+  if (!isValidEmailAddress(user.email)) {
     return { ok: false, reason: 'User email is invalid.' }
   }
-  return { ok: true, email: user.email, fullName: user.fullName }
+  return { ok: true, email: String(user.email).trim(), fullName: user.fullName }
 }
 
 function reminderRecordKey(reminder) {
   return `${reminder.userId}:${reminder.product}:${reminder.targetMilestone}`
+}
+
+/**
+ * Safe reminder id for logs and results.
+ *
+ * Reminders are handled both as lean documents and as objects spread out of a
+ * Mongoose document (where `_id` is a prototype getter and is therefore lost),
+ * so never assume `_id` is present.
+ */
+function reminderIdOf(reminder) {
+  const raw = reminder && (reminder._id != null ? reminder._id : reminder.id)
+  return raw == null ? 'unknown' : String(raw)
 }
 
 /**
@@ -145,7 +219,7 @@ async function sendReminder(reminder, options = {}) {
     return {
       ok: false,
       reason: 'No recipient address.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -154,7 +228,7 @@ async function sendReminder(reminder, options = {}) {
     return {
       ok: false,
       reason: 'Mail transport not configured.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -263,7 +337,7 @@ async function sendReminder(reminder, options = {}) {
 
     return {
       ok: true,
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
       messageId: info.messageId,
       accepted: Array.isArray(info.accepted) ? info.accepted : [],
       rejected: Array.isArray(info.rejected) ? info.rejected : [],
@@ -271,8 +345,8 @@ async function sendReminder(reminder, options = {}) {
   } catch (error) {
     return {
       ok: false,
-      reminderId: reminder._id.toString(),
-      error: error instanceof Error ? error.message : String(error),
+      reminderId: reminderIdOf(reminder),
+      error: describeMailError(error),
     }
   }
 }
@@ -298,7 +372,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: 'Already notified.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -307,7 +381,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: 'Product no longer exists.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -316,7 +390,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: 'Product has no valid warranty expiry date.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -329,7 +403,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: 'Reminder target date is invalid.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -340,7 +414,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: 'Reminder date is after warranty expiry.',
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -349,7 +423,7 @@ async function prepareReminder(reminder) {
     return {
       ok: false,
       reason: userCheck.reason,
-      reminderId: reminder._id.toString(),
+      reminderId: reminderIdOf(reminder),
     }
   }
 
@@ -376,22 +450,64 @@ async function prepareReminder(reminder) {
   }
 }
 
+/** Delivery attempts a reminder gets before it is given up on. */
+const MAX_SEND_ATTEMPTS = 3
+
 /**
- * Mark the reminder as notified and record the outcome.
+ * Record the outcome of a send attempt.
+ *
+ * Success marks the reminder notified, which is what stops it being sent again
+ * (a tick only picks up `notifiedAt: null`).
+ *
+ * A failure must NOT mark it notified: a temporary SMTP or network problem
+ * would otherwise drop the reminder permanently. The attempt counter is bumped
+ * and the reminder stays eligible so the next tick retries it — until
+ * MAX_SEND_ATTEMPTS is reached, where it is marked failed and notified so it
+ * stops retrying and shows up as failed through the API.
+ *
+ * Pass `{ retryable: false }` for conditions that can never succeed on a retry
+ * (deleted product, expired warranty, no valid address) so they are settled
+ * immediately instead of being retried on the next tick.
+ *
+ * @returns {Promise<{ok: boolean, attempts: number, willRetry: boolean}>}
  */
-async function recordSendOutcome(reminderId, outcome) {
-  const update = {
-    notifiedAt: new Date(),
-    notificationStatus: outcome.ok ? 'sent' : 'failed',
+async function recordSendOutcome(reminderId, outcome, options = {}) {
+  const now = new Date()
+  const retryable = options.retryable !== false
+
+  if (outcome.ok) {
+    const update = {
+      notifiedAt: now,
+      status: 'sent',
+      notificationStatus: 'sent',
+    }
+    if (outcome.messageId) update.lastNotificationMessageId = outcome.messageId
+
+    await Reminder.updateOne({ _id: reminderId }, { $set: update, $inc: { sentCount: 1 } }).catch(
+      () => {},
+    )
+    return { ok: true, attempts: 1, willRetry: false }
   }
 
-  if (!outcome.ok) {
-    update.lastNotificationError = outcome.reason || outcome.error || 'Unknown error.'
-  } else if (outcome.messageId) {
-    update.lastNotificationMessageId = outcome.messageId
+  const reason = outcome.reason || outcome.error || 'Unknown error.'
+  const updated = await Reminder.findOneAndUpdate(
+    { _id: reminderId },
+    { $set: { notificationStatus: 'failed', lastNotificationError: reason }, $inc: { sentCount: 1 } },
+    { new: true, projection: { sentCount: 1 } },
+  ).catch(() => null)
+
+  // When the counter cannot be read, give up rather than risk an endless loop.
+  const attempts = updated?.sentCount ?? MAX_SEND_ATTEMPTS
+  const willRetry = retryable && attempts < MAX_SEND_ATTEMPTS
+
+  if (!willRetry) {
+    await Reminder.updateOne(
+      { _id: reminderId },
+      { $set: { status: 'failed', notifiedAt: now } },
+    ).catch(() => {})
   }
 
-  await Reminder.updateOne({ _id: reminderId }, update).catch(() => {})
+  return { ok: false, attempts, willRetry }
 }
 
 /**
@@ -414,10 +530,15 @@ async function runTick(transporter, options = {}) {
     const prepared = await prepareReminder(reminder)
     if (!prepared.ok) {
       results.push(prepared)
-      await recordSendOutcome(reminder._id, {
-        ok: false,
-        reason: prepared.reason,
-      })
+      console.warn(
+        `[reminder] Skipped reminder ${reminder._id}: ${maskEmails(prepared.reason)}`,
+      )
+      // Ineligible for a permanent reason — settle it now, do not retry.
+      await recordSendOutcome(
+        reminder._id,
+        { ok: false, reason: prepared.reason },
+        { retryable: false },
+      )
       continue
     }
 
@@ -426,8 +547,25 @@ async function runTick(transporter, options = {}) {
       testRecipient,
     })
 
+    if (!sendResult.ok) {
+      console.error(
+        `[reminder] Send failed for reminder ${reminder._id}: ${maskEmails(
+          sendResult.error || sendResult.reason || 'unknown error',
+        )}`,
+      )
+    } else {
+      console.log(
+        `[reminder] Sent reminder ${reminder._id} (message id ${sendResult.messageId}).`,
+      )
+    }
+
     results.push(sendResult)
-    await recordSendOutcome(reminder._id, sendResult)
+    const recorded = await recordSendOutcome(reminder._id, sendResult)
+    if (recorded.willRetry) {
+      console.warn(
+        `[reminder] Reminder ${reminder._id} will be retried (attempt ${recorded.attempts}/${MAX_SEND_ATTEMPTS}).`,
+      )
+    }
   }
 
   return results
@@ -439,6 +577,13 @@ async function runTick(transporter, options = {}) {
 function startScheduler(server) {
   if (process.env.NODE_ENV === 'test') {
     return { running: false, reason: 'Scheduler disabled in test mode.' }
+  }
+
+  // Guard against a second start (a repeated import, a hot reload, or a future
+  // caller): two cron tasks would double every reminder send.
+  if (schedulerHandle) {
+    console.log('[reminder] Scheduler is already running — reusing the existing task.')
+    return schedulerHandle
   }
 
   const schedule = env('REMINDER_SCHEDULE') || '*/30 * * * *'
@@ -455,10 +600,18 @@ function startScheduler(server) {
   }
 
   const transporter = makeTransporter()
-  let validating = true
+
+  // A tick that runs long (many reminders, a slow provider) must not overlap the
+  // next one, or the same reminder could be attempted twice concurrently.
+  let tickRunning = false
 
   const task = cron.schedule(schedule, async () => {
-    if (!validating) return
+    if (tickRunning) {
+      console.warn('[reminder] Previous tick is still running — skipping this one.')
+      return
+    }
+
+    tickRunning = true
     try {
       const results = await runTick(transporter)
       const sent = results.filter((r) => r.ok).length
@@ -470,22 +623,27 @@ function startScheduler(server) {
       }
     } catch (error) {
       console.error('[reminder] Scheduler tick failed:', error instanceof Error ? error.message : error)
+    } finally {
+      tickRunning = false
     }
   })
 
   task.start()
-  validating = false
 
   console.log(`[reminder] Scheduler started with schedule "${schedule}".`)
   console.log('[reminder] To test a single reminder outside the schedule, use POST /api/reminders/send-test.')
 
-  return {
+  schedulerHandle = {
     running: true,
     task,
     mode,
     schedule,
     transporter,
+    // Exposed for diagnostics and tests: how many attempts a reminder gets.
+    maxSendAttempts: MAX_SEND_ATTEMPTS,
   }
+
+  return schedulerHandle
 }
 
 module.exports = {
@@ -493,9 +651,16 @@ module.exports = {
   sendReminder,
   runTick,
   prepareReminder,
+  recordSendOutcome,
+  reminderIdOf,
+  MAX_SEND_ATTEMPTS,
   getMailMode,
   isSmtpConfigured,
   getMailFrom,
+  getTestRecipient,
+  isValidEmailAddress,
+  maskEmails,
+  describeMailError,
   makeTransporter,
   env,
 }

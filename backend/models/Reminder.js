@@ -54,11 +54,24 @@ const reminderSchema = new Schema(
       enum: ['pending', 'sent', 'delivered', 'failed', 'cancelled'],
       default: 'pending',
     },
+    notificationStatus: {
+      type: String,
+      enum: ['pending', 'sent', 'delivered', 'failed'],
+      default: 'pending',
+    },
     sentCount: {
       type: Number,
       default: 0,
     },
     lastErrorMessage: {
+      type: String,
+      default: null,
+    },
+    lastNotificationError: {
+      type: String,
+      default: null,
+    },
+    lastNotificationMessageId: {
       type: String,
       default: null,
     },

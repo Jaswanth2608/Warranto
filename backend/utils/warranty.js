@@ -128,6 +128,7 @@ module.exports = {
   addDays,
   addMonths,
   getWarrantyExpiryDate,
+  startOfDay,
   daysBetween,
   deriveWarrantyStatus,
   statusQuery,

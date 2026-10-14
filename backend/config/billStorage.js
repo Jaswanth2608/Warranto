@@ -167,16 +167,41 @@ async function uploadBuffer({ buffer, userId, productId }) {
   return localUpload(buffer, { userId, productId })
 }
 
-/** Best-effort deletion of a previously stored asset. */
-async function destroyAsset(publicId, resourceType) {
+/**
+ * Best-effort deletion of a previously stored asset.
+ *
+ * `driver` should be the driver that stored the asset when it is known; it
+ * falls back to the currently active driver so callers that only have a
+ * publicId keep working.
+ */
+async function destroyAsset(publicId, resourceType, driver) {
   if (!publicId) return
-  if (activeDriver() === 'cloudinary') await cloudinaryDestroy(publicId, resourceType)
+  if ((driver || activeDriver()) === 'cloudinary') await cloudinaryDestroy(publicId, resourceType)
   else await localDestroy(publicId)
 }
 
-/** Absolute on-disk path for a local asset, or null for the cloudinary driver. */
+/**
+ * Which driver stored an existing bill. Derives the answer from the stored
+ * record so changing BILL_STORAGE_DRIVER / adding Cloudinary credentials never
+ * re-interprets older bills: a local bill keeps streaming, and a Cloudinary
+ * bill keeps redirecting to its own URL. Falls back to the active driver for
+ * records written before the `resourceType` field existed.
+ */
+function driverForStoredAsset(bill) {
+  if (!bill) return activeDriver()
+  if (bill.resourceType === 'local') return 'local'
+  if (typeof bill.url === 'string' && bill.url.startsWith('/api/bills/')) return 'local'
+  if (bill.publicId) return 'cloudinary'
+  return activeDriver()
+}
+
+/**
+ * Absolute on-disk path for a local asset, or null when the file is not stored
+ * on local disk. Independent of the *currently configured* driver so bills
+ * uploaded before Cloudinary was configured are still readable.
+ */
 function resolveLocalPath(publicId) {
-  if (activeDriver() !== 'local' || !publicId) return null
+  if (!publicId) return null
   const target = path.resolve(LOCAL_ROOT, publicId)
   if (!target.startsWith(LOCAL_ROOT + path.sep)) return null
   return target
@@ -206,5 +231,6 @@ module.exports = {
   uploadBuffer,
   destroyAsset,
   resolveLocalPath,
+  driverForStoredAsset,
   contentTypeFor,
 }

@@ -4,6 +4,7 @@ node_modules/
 # Environment files — real credentials never go into Git
 .env
 .env.local
+.env.test
 .env.*.local
 
 # Logs

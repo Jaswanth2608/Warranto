@@ -28,6 +28,7 @@ const {
   uploadBuffer,
   destroyAsset,
   resolveLocalPath,
+  driverForStoredAsset,
   contentTypeFor,
   activeDriver,
 } = require('../config/billStorage')
@@ -50,11 +51,15 @@ async function storeFile(file, userId, productId) {
   }
 }
 
-/** Best-effort cleanup of a previous asset — never fails the main request. */
-async function cleanupAsset(publicId, resourceType, context) {
+/**
+ * Best-effort cleanup of a previous asset — never fails the main request.
+ * `bill` is optional; when given, the asset is deleted with the driver that
+ * actually stored it, so a storage-driver change cannot leave files behind.
+ */
+async function cleanupAsset(publicId, resourceType, context, bill) {
   if (!publicId) return
   try {
-    await destroyAsset(publicId, resourceType)
+    await destroyAsset(publicId, resourceType, bill ? driverForStoredAsset(bill) : undefined)
   } catch (error) {
     console.error(`[bills] Could not delete stored asset (${context}):`, error.message)
   }
@@ -193,7 +198,7 @@ exports.replaceBill = async (req, res, next) => {
 
     // The old asset is no longer referenced — clean it up after the save.
     if (previous?.publicId && previous.publicId !== stored.publicId) {
-      await cleanupAsset(previous.publicId, previous.resourceType, 'replaced bill')
+      await cleanupAsset(previous.publicId, previous.resourceType, 'replaced bill', previous)
     }
 
     res.json({ success: true, bill: product.toJSON().bill, product: product.toJSON() })
@@ -219,7 +224,7 @@ exports.removeBill = async (req, res, next) => {
     product.bill = null
     await product.save()
 
-    await cleanupAsset(previous.publicId, previous.resourceType, 'deleted bill')
+    await cleanupAsset(previous.publicId, previous.resourceType, 'deleted bill', previous)
 
     res.json({ success: true, message: 'Bill deleted.', id: productId })
   } catch (error) {
@@ -254,8 +259,17 @@ exports.getBillFile = async (req, res, next) => {
     )
     res.setHeader('Cache-Control', 'private, no-store')
 
-    const localPath = resolveLocalPath(product.bill.publicId)
-    if (localPath) {
+    // Decide from the stored record, not from the current configuration, so a
+    // bill uploaded before Cloudinary was configured still streams from disk
+    // instead of redirecting to its own URL in a loop.
+    const storedDriver = driverForStoredAsset(product.bill)
+
+    if (storedDriver === 'local') {
+      const localPath = resolveLocalPath(product.bill.publicId)
+      if (!localPath) {
+        throw new ApiError(404, 'The stored bill file could not be found.')
+      }
+
       res.setHeader('Content-Type', contentTypeFor(product.bill.fileType))
       const stream = fs.createReadStream(localPath)
       stream.on('error', (error) => {

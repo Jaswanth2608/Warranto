@@ -350,7 +350,9 @@ function firstLabeledText(text, labelRegex, valueRegex) {
  *
  * @param {string} text
  * @param {RegExp} labelRegex  Matches the label (e.g. /\bbrand\b/i).
- * @param {{ min?: number, max?: number, pattern?: RegExp }} [options]
+ * @param {{ min?: number, max?: number, pattern?: RegExp, reject?: (value: string) => boolean }} [options]
+ *   `reject` skips a candidate that matches structurally but is not a real
+ *   value (e.g. a table column header captured as the product name).
  */
 function valueAfterLabel(text, labelRegex, options = {}) {
   const min = options.min ?? 2
@@ -371,24 +373,139 @@ function valueAfterLabel(text, labelRegex, options = {}) {
 
     if (value.length < min || value.length > max) continue
     if (options.pattern && !options.pattern.test(value)) continue
+    if (options.reject && options.reject(value)) continue
     return value
   }
 
   return null
 }
 
-function firstUnlabeledAllCapsLine(text) {
+function firstUnlabeledAllCapsLine(text, isAcceptable = () => true) {
   const lines = text.split(/\r?\n/)
   for (const line of lines) {
     const trimmed = line.trim()
     if (
       trimmed.length >= 4 &&
       trimmed.length <= 120 &&
-      /^[A-Z0-9][A-Z0-9&\s.'\-]{2,119}$/.test(trimmed)
+      /^[A-Z0-9][A-Z0-9&\s.'\-]{2,119}$/.test(trimmed) &&
+      isAcceptable(trimmed)
     ) {
       return trimmed
     }
   }
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Guards: things that look like a value but are not one
+// ---------------------------------------------------------------------------
+
+/**
+ * Column headings from an invoice table. OCR regularly returns a header row as
+ * the value of a "Description"/"Item" label, which used to reach the review
+ * form as a bogus product name ("HSN Qty Amount"). A value made up entirely of
+ * these words is never a product name.
+ */
+const COLUMN_HEADER_WORDS = new Set([
+  'no', 'nos', 'number', 'num', 'sr', 'sl', 'sno', 's', 'description',
+  'descriptions', 'particulars', 'particular', 'item', 'items', 'product',
+  'products', 'goods', 'code', 'hsn', 'sac', 'qty', 'quantity', 'unit', 'units',
+  'rate', 'price', 'amount', 'value', 'total', 'net', 'gross', 'tax', 'taxable',
+  'gst', 'cgst', 'sgst', 'igst', 'cess', 'discount', 'mrp', 'remark', 'remarks',
+  'details', 'name', 'brand', 'model', 'serial', 'type', 'category',
+])
+
+/** Words that only ever appear in a document heading, never in a product name. */
+const DOCUMENT_TITLE_WORDS = new Set([
+  'tax', 'invoice', 'invoices', 'receipt', 'bill', 'bills', 'statement',
+  'quotation', 'quote', 'estimate', 'proforma', 'challan', 'order', 'delivery',
+  'copy', 'original', 'duplicate', 'customer', 'details', 'page',
+])
+
+function wordsOf(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+function everyWordIn(value, allowed) {
+  const words = wordsOf(value)
+  if (words.length === 0 || words.length > 6) return false
+  return words.every((word) => allowed.has(word))
+}
+
+function looksLikeColumnHeader(value) {
+  return everyWordIn(value, COLUMN_HEADER_WORDS)
+}
+
+function looksLikeDocumentTitle(value) {
+  return everyWordIn(value, DOCUMENT_TITLE_WORDS)
+}
+
+/**
+ * A bare reference code ("INV-2024-000123", "9X3K821100") is never a product
+ * name. Several digits are required so a real name that merely contains a
+ * digit is still accepted.
+ */
+function looksLikeReferenceCode(value) {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (!/\d/.test(compact)) return false
+  if ((compact.match(/\d/g) || []).length < 3) return false
+  return /^[A-Z]{0,8}[-/]?\d[\dA-Z\s./-]*$/i.test(compact)
+}
+
+/** True when a candidate must never be used as the product name. */
+function isNotProductName(value) {
+  return (
+    looksLikeColumnHeader(value) ||
+    looksLikeDocumentTitle(value) ||
+    looksLikeReferenceCode(value)
+  )
+}
+
+/**
+ * Reads a short labelled reference (an invoice number) from a table cell.
+ *
+ * Real invoices put the number in a column, so the value ends at the first wide
+ * (2+ space) gap: "Invoice No: CRO/2024/00123   Date: 12-05-2024" yields
+ * "CRO/2024/00123" and not the trailing column heading. A label remnant that
+ * was not part of the matched label ("No", "Number", "#") is stripped too.
+ *
+ * Returns null when nothing usable follows the label, so an unreadable invoice
+ * number is left blank instead of being guessed.
+ */
+function labeledReference(text, labelRegex) {
+  const lines = text.split(/\r?\n/)
+
+  for (const line of lines) {
+    const labelMatch = line.match(labelRegex)
+    if (!labelMatch) continue
+
+    const rest = line.slice(labelMatch.index + labelMatch[0].length)
+
+    // "Invoice Date"/"Bill Date" describe a date, not the reference.
+    if (/^\s*(?::|-)?\s*(?:date|dt|dated)\b/i.test(rest)) continue
+    // "INV-2024-000123" must not be read as the label "INV" plus "-2024-000123":
+    // a label is always separated from its value.
+    if (/^[-/.]\d/.test(rest)) continue
+
+    const cell = rest.split(/\s{2,}/)[0].trim()
+    const value = cell
+      .replace(/^[.:=#]+/, '')
+      .replace(/^[\u2013\u2014-]+\s+/, '')
+      .replace(/^(?:nos?|number|num|#)\s*[:.]?\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .replace(/[^A-Za-z0-9\-/. ]/g, '')
+      .replace(/[\s,;:.-]+$/, '')
+      .trim()
+
+    if (!/\d/.test(value)) continue
+    if (value.length < 4 || value.length > 60) continue
+    return value
+  }
+
   return null
 }
 
@@ -405,11 +522,7 @@ function extractSuggestions(text) {
   const matched = {}
 
   // Invoice number — labelled, keep only safe characters.
-  const invoice = firstLabeledText(
-    text,
-    /\b(?:invoice|inv(?:oice)?|bill|receipt)\b/i,
-    /\b([A-Z0-9][A-Z0-9\-\/\. ]{4,40})\b/i,
-  )
+  const invoice = labeledReference(text, /\b(?:invoice|inv(?:oice)?|bill|receipt)\b/i)
   if (invoice) {
     const cleaned = invoice
       .replace(/\s+/g, ' ')
@@ -453,11 +566,13 @@ function extractSuggestions(text) {
   }
 
   // Product name — the value after a "Product Name"/"Item"/"Description"
-  // label, consumed whole so the label word itself is never returned.
+  // label, consumed whole so the label word itself is never returned. Values
+  // that are really a table header, a document heading or a bare reference code
+  // are rejected outright, so the review form never shows a fake product name.
   const productName = valueAfterLabel(
     text,
     /\b(?:product\s*(?:name|title)|item\s*(?:name|title|desc(?:ription)?)|product\s*desc(?:ription)?|item|description)\b/i,
-    { min: 3, max: 120 },
+    { min: 3, max: 120, reject: isNotProductName },
   )
   if (productName) {
     matched.productName = productName
@@ -487,9 +602,10 @@ function extractSuggestions(text) {
   if (serialNumber) matched.serialNumber = serialNumber
 
   // Fallback: only when no labelled product name was found, use an all-caps
-  // line as a hint. Never overwrite a real labelled value.
+  // line as a hint. Never overwrite a real labelled value, and never hand back
+  // a document heading or the invoice number (both are all-caps too).
   if (!matched.productName) {
-    const fallback = firstUnlabeledAllCapsLine(text)
+    const fallback = firstUnlabeledAllCapsLine(text, (value) => !isNotProductName(value))
     if (fallback) matched.productName = fallback
   }
 

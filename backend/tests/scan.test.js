@@ -19,6 +19,7 @@ const { test, describe } = require('node:test')
 const ocr = require('../lib/ocrScanner')
 const scanService = require('../lib/scanService')
 const { isYMD } = require('../utils/warranty')
+const { buildTextPdf } = require('./helpers/text-pdf')
 
 // ---------------------------------------------------------------------------
 // OCR scanner extraction tests
@@ -371,6 +372,152 @@ describe('ocrScanner failure paths', () => {
         ),
       (e) => e.message.includes('Unsupported'),
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regression: the review form must never be filled with a non-value.
+//
+// `POST /api/scan` returns these suggestions and the review form copies them
+// straight into its editable fields, so a bogus candidate (a table column
+// header, a document heading, a bare reference code, another field's value)
+// shows up to the user as a wrong or missing extracted field. A field OCR
+// cannot read must stay blank instead.
+// ---------------------------------------------------------------------------
+
+describe('ocrScanner review-form guards', () => {
+  test('never returns a table column header as the product name', () => {
+    const TABLE = [
+      'TAX INVOICE',
+      'Croma Retail Store',
+      'Invoice No: CRO/2024/00123   Date: 12-05-2024',
+      'S.No  Description              HSN   Qty   Amount',
+      '1     Samsung Washing Machine  8450  1     45000.00',
+      'Total: 45,000.00',
+    ].join('\n')
+
+    const s = ocr.extractSuggestions(TABLE)
+    assert.notEqual(s.productName, 'HSN Qty Amount')
+    assert.ok(
+      !s.productName || !/hsn|qty|amount|description|particular/i.test(s.productName),
+      `product name must not be a column header, got ${JSON.stringify(s.productName)}`,
+    )
+  })
+
+  test('never returns a document heading as the product name', () => {
+    const s = ocr.extractSuggestions('TAX INVOICE\nTotal Rs. 45,000')
+    assert.notEqual(s.productName, 'TAX INVOICE')
+  })
+
+  test('never returns the invoice number as the product name', () => {
+    const s = ocr.extractSuggestions('Invoice No\nINV-2024-000123\nTotal Rs. 45,000')
+    assert.ok(
+      !s.productName || !/^INV/i.test(s.productName),
+      `product name must not be the invoice number, got ${JSON.stringify(s.productName)}`,
+    )
+  })
+
+  test('never returns a bare reference code as the product name', () => {
+    const s = ocr.extractSuggestions('9X3K821100\nTotal Rs. 45,000')
+    assert.equal(s.productName, undefined)
+  })
+
+  test('still reads a genuine product name', () => {
+    const s = ocr.extractSuggestions('Product Name: Samsung Washing Machine\nTotal Rs. 45,000')
+    assert.equal(s.productName, 'Samsung Washing Machine')
+  })
+
+  test('reads an invoice number without a label remnant', () => {
+    const s = ocr.extractSuggestions('invoice no inv-2024-000123\nTotal Rs. 45,000')
+    assert.equal(s.invoiceNumber, 'INV-2024-000123')
+  })
+
+  test('stops the invoice number at the next table column', () => {
+    const s = ocr.extractSuggestions(
+      'Invoice No: CRO/2024/00123   Date: 12-05-2024\nTotal Rs. 45,000',
+    )
+    assert.equal(s.invoiceNumber, 'CRO/2024/00123')
+  })
+
+  test('does not read "Invoice Date" as the invoice number', () => {
+    const s = ocr.extractSuggestions('Invoice Date: 12-05-2024\nTotal Rs. 45,000')
+    assert.equal(s.invoiceNumber, undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regression: the exact POST /api/scan response contract the review form
+// depends on. `scanService.scan` builds the `scanId`, `suggestions`, `rawText`,
+// `source` and `processingTimeMs` fields the route returns.
+// ---------------------------------------------------------------------------
+
+const LABELLED_BILL = [
+  'TAX INVOICE',
+  'Croma Retail Store',
+  'Invoice No: INV-2024-000123',
+  'Invoice Date: 12-05-2024',
+  'Sold By: Croma, Hyderabad',
+  'Product Name: Samsung Washing Machine',
+  'Brand: Samsung',
+  'Model No: WA70BG4441BD',
+  'Serial No: 9X3K821100',
+  'Subtotal: 42,000.00',
+  'Total: Rs. 45,000.00',
+  'Warranty: 24 months',
+].join('\n')
+
+describe('scanService.scan response contract', () => {
+  const scanOptions = () => ({
+    buffer: buildTextPdf(LABELLED_BILL.split('\n')),
+    fileType: 'PDF',
+    mimeType: 'application/pdf',
+    size: 1,
+  })
+
+  test('returns exactly the documented result keys', async () => {
+    const result = await scanService.scan(scanOptions(), null, 'user-under-test')
+    assert.deepStrictEqual(Object.keys(result).sort(), [
+      'processingTimeMs',
+      'rawText',
+      'scanId',
+      'source',
+      'suggestions',
+    ])
+  })
+
+  test("scan ids satisfy the route's isMongoId rule", async () => {
+    const result = await scanService.scan(scanOptions(), null, 'user-under-test')
+    assert.match(result.scanId, /^[a-f0-9]{24}$/)
+  })
+
+  test('suggestions carry exactly the keys the review form maps', async () => {
+    const result = await scanService.scan(scanOptions(), null, 'user-under-test')
+    assert.deepStrictEqual(Object.keys(result.suggestions).sort(), [
+      'brand',
+      'invoiceNumber',
+      'modelNumber',
+      'productName',
+      'purchaseDate',
+      'purchasePrice',
+      'seller',
+      'serialNumber',
+      'warrantyMonths',
+    ])
+  })
+
+  test('every extracted field is populated for a labelled bill', async () => {
+    const { suggestions } = await scanService.scan(scanOptions(), null, 'user-under-test')
+    assert.deepStrictEqual(suggestions, {
+      invoiceNumber: 'INV-2024-000123',
+      purchaseDate: '2024-05-12',
+      purchasePrice: 45000,
+      warrantyMonths: 24,
+      seller: 'Croma, Hyderabad',
+      productName: 'Samsung Washing Machine',
+      brand: 'Samsung',
+      modelNumber: 'WA70BG4441BD',
+      serialNumber: '9X3K821100',
+    })
   })
 })
 

@@ -16,6 +16,11 @@ import {
   Badge,
 } from '../../components/ui'
 import { scanService } from '../../services/scanService'
+import {
+  mapScanResponseToForm,
+  readScanSuggestions,
+  SCAN_SUGGESTION_FIELDS,
+} from '../../utils/scanSuggestions'
 import { formatDate } from '../../utils/dates'
 import { formatCurrency } from '../../utils/format'
 import { SERVICE_TYPE_LABELS } from '../../utils/constants'
@@ -113,25 +118,29 @@ export function ScanBillForm({ initialProductId, onCreated }) {
     setError(null) // clear any previous failure before this attempt
     try {
       const res = await scanService.scan(productId || undefined, file)
-      setScan(res.data)
-      // Map every suggestion the API can return onto its form field. Values
-      // are only ever copied from the scan result — a field the OCR could not
-      // read stays at its previous (usually empty) value instead of being
-      // invented. Each key uses `|| prev[...]` so an empty suggestion never
-      // wipes what the user has already typed.
-      const suggestions = res.data.suggestions || {}
-      setForm((prev) => ({
-        ...prev,
-        name: suggestions.productName || prev.name,
-        brand: suggestions.brand || prev.brand,
-        modelNumber: suggestions.modelNumber || prev.modelNumber,
-        serialNumber: suggestions.serialNumber || prev.serialNumber,
-        seller: suggestions.seller || prev.seller,
-        purchaseDate: suggestions.purchaseDate || prev.purchaseDate,
-        purchasePrice: suggestions.purchasePrice != null ? String(suggestions.purchasePrice) : prev.purchasePrice,
-        warrantyMonths: suggestions.warrantyMonths != null ? String(suggestions.warrantyMonths) : prev.warrantyMonths,
-        invoiceNumber: suggestions.invoiceNumber || prev.invoiceNumber,
-      }))
+      const body = res?.data ?? res
+      setScan(body)
+
+      const suggestions = readScanSuggestions(body)
+      // TEMPORARY diagnostic — structure only, safe to log: the names of the
+      // response keys and of the suggestion keys the form is about to read,
+      // plus a count of how many carry a value. It never logs the bearer
+      // token, the uploaded file, the raw OCR text or the extracted values.
+      console.info('[scan] response structure', {
+        responseKeys: Object.keys(body || {}),
+        suggestionKeys: Object.keys(suggestions),
+        source: body?.source ?? null,
+        rawTextLength: typeof body?.rawText === 'string' ? body.rawText.length : 0,
+        mappedFields: Object.values(SCAN_SUGGESTION_FIELDS).filter(
+          (key) => suggestions[key] !== undefined && suggestions[key] !== null && suggestions[key] !== '',
+        ).length,
+      })
+
+      // Map every suggestion the API returned onto its form field. The mapping
+      // lives in a pure, tested module; a field the OCR could not read keeps
+      // its previous (usually empty) value instead of being invented, and an
+      // empty suggestion never wipes what the user has already typed.
+      setForm((prev) => mapScanResponseToForm(body, prev))
       setStep('review')
       toast.success('Bill scanned. Review the suggested fields below.')
     } catch (err) {
@@ -224,7 +233,7 @@ export function ScanBillForm({ initialProductId, onCreated }) {
     setRawTextExpanded(false)
   }
 
-  const suggestionFor = (field) => scan?.suggestions?.[field]
+  const suggestionFor = (field) => readScanSuggestions(scan)[field]
   const hasSuggestion = (field) => Boolean(suggestionFor(field))
 
   return (

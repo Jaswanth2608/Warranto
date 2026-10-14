@@ -27,6 +27,7 @@ const test = require('node:test')
 const { app } = require('../server')
 const { connectDB, disconnectDB } = require('../config/db')
 const call = require('../tests/helpers/api-call')
+const { buildTextPdf } = require('./helpers/text-pdf')
 
 let server = null
 let dbReady = false
@@ -843,4 +844,107 @@ test('service records: create, list, cost totals, and ownership', async (t) => {
 
   const gone = await call('GET', `/api/services/${firstId}`, { token: alice.token })
   assert.equal(gone.status, 404)
+})
+
+// ---------------------------------------------------------------------------
+// Scan Bill: the OCR response the review form is built from.
+//
+// The form copies `suggestions` straight into its editable fields, so this
+// pins the response shape field by field and proves that scanning on its own
+// never creates a product.
+// ---------------------------------------------------------------------------
+
+test('scan: OCR suggests the review fields, saves nothing, and is retrievable', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('scan')
+
+  const before = await call('GET', '/api/products', { token: alice.token })
+  assert.equal(before.status, 200)
+  assert.equal(before.data.count, 0)
+
+  const bill = buildTextPdf([
+    'TAX INVOICE',
+    'Croma Retail Store',
+    'Invoice No: INV-2024-000123',
+    'Invoice Date: 12-05-2024',
+    'Sold By: Croma, Hyderabad',
+    'Product Name: Samsung Washing Machine',
+    'Brand: Samsung',
+    'Model No: WA70BG4441BD',
+    'Serial No: 9X3K821100',
+    'Subtotal: 42,000.00',
+    'Total: Rs. 45,000.00',
+    'Warranty: 24 months',
+  ])
+
+  const scan = await call('POST', '/api/scan', {
+    token: alice.token,
+    body: { file: bill, fileType: 'application/pdf', fileName: 'contract-bill.pdf' },
+  })
+
+  assert.equal(scan.status, 201, JSON.stringify(scan.data))
+
+  // Exactly the documented response shape — nothing more, nothing less.
+  assert.deepStrictEqual(Object.keys(scan.data).sort(), [
+    'file',
+    'processingTimeMs',
+    'rawText',
+    'scanId',
+    'source',
+    'success',
+    'suggestions',
+  ])
+  assert.equal(scan.data.success, true)
+  assert.match(scan.data.scanId, /^[a-f0-9]{24}$/, 'scanId must satisfy the route isMongoId rule')
+  assert.equal(typeof scan.data.processingTimeMs, 'number')
+  assert.equal(scan.data.source, 'pdf')
+  assert.equal(typeof scan.data.rawText, 'string')
+
+  // File metadata only — never the buffered upload itself.
+  assert.deepStrictEqual(Object.keys(scan.data.file).sort(), [
+    'fileName',
+    'fileType',
+    'mimeType',
+    'size',
+  ])
+  assert.equal(scan.data.file.fileType, 'PDF')
+
+  // Every extracted field reaches the response with the exact key the review
+  // form maps onto its input.
+  assert.deepStrictEqual(Object.keys(scan.data.suggestions).sort(), [
+    'brand',
+    'invoiceNumber',
+    'modelNumber',
+    'productName',
+    'purchaseDate',
+    'purchasePrice',
+    'seller',
+    'serialNumber',
+    'warrantyMonths',
+  ])
+  assert.deepStrictEqual(scan.data.suggestions, {
+    invoiceNumber: 'INV-2024-000123',
+    purchaseDate: '2024-05-12',
+    purchasePrice: 45000,
+    warrantyMonths: 24,
+    seller: 'Croma, Hyderabad',
+    productName: 'Samsung Washing Machine',
+    brand: 'Samsung',
+    modelNumber: 'WA70BG4441BD',
+    serialNumber: '9X3K821100',
+  })
+
+  // Scanning alone must never create a product.
+  const after = await call('GET', '/api/products', { token: alice.token })
+  assert.equal(after.data.count, 0, 'a scan must not create a product')
+
+  // The stored result is retrievable by the scan id the response returned.
+  const fetched = await call('GET', `/api/scan/${scan.data.scanId}`, { token: alice.token })
+  assert.equal(fetched.status, 200, JSON.stringify(fetched.data))
+  assert.deepStrictEqual(fetched.data.suggestions, scan.data.suggestions)
+
+  // A scan id that was never issued is a clean 404, not a crash.
+  const missing = await call('GET', '/api/scan/64b000000000000000000000', { token: alice.token })
+  assert.equal(missing.status, 404)
 })

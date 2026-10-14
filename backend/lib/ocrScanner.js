@@ -206,33 +206,40 @@ function normalizePrice(raw) {
  * Extracts candidate dates from OCR text.
  *
  * Accepts DD-MM-YYYY and MM/DD/YYYY. When a value could be either ordering
- * (e.g. 10-12-2023), both interpretations are considered and the most
- * realistic recent date is preferred — but the result is only a suggestion.
+ * (e.g. 10-12-2023), both interpretations are considered and the separator's
+ * own convention wins (`-` → day-first, `/` → month-first), falling back to the
+ * other only when the preferred one is not a real calendar date. The most
+ * recent realistic date breaks ties — the result is only a suggestion.
  */
 function normalizeDate(text) {
   if (!text) return null
-  const re = /(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/g
+
+  // The separator is captured (and must repeat) so its convention can decide
+  // ambiguous dates: "12-05-2024" is day-first (DD-MM, the common form on
+  // Indian invoices) while "12/05/2024" is month-first (MM/DD).
+  const re = /(\d{1,2})([-/])(\d{1,2})\2(\d{2,4})/g
   const candidates = []
   let m
 
   while ((m = re.exec(text)) !== null) {
     const a = Number(m[1])
-    const b = Number(m[2])
-    const yearRaw = m[3]
+    const b = Number(m[3])
+    const separator = m[2]
+    const yearRaw = m[4]
     const year = yearRaw.length === 2 ? 2000 + Number(yearRaw) : Number(yearRaw)
 
     if (year < 1990 || year > 2035) continue
 
-    // Interpretation 1: first = day, second = month
-    if (a >= 1 && a <= 31 && b >= 1 && b <= 12) {
-      const candidate = candidateDate(year, b, a)
-      if (candidate) candidates.push(candidate)
+    const dayFirst = separator === '-'
+    // rank 0 = the separator's own convention, rank 1 = the alternative.
+    const push = (date, preferred) => {
+      if (date) candidates.push({ date, rank: preferred ? 0 : 1 })
     }
-    // Interpretation 2: first = month, second = day
-    if (b >= 1 && b <= 31 && a >= 1 && a <= 12) {
-      const candidate = candidateDate(year, a, b)
-      if (candidate) candidates.push(candidate)
-    }
+
+    // Interpretation 1: first = day, second = month (DD-MM-YYYY).
+    push(candidateDate(year, b, a), dayFirst)
+    // Interpretation 2: first = month, second = day (MM-DD-YYYY).
+    push(candidateDate(year, a, b), !dayFirst)
   }
 
   if (candidates.length === 0) return null
@@ -242,14 +249,12 @@ function normalizeDate(text) {
   const lower = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate())
   const upper = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate())
 
-  const realistic = candidates.filter((d) => d >= lower && d <= upper)
-  if (realistic.length > 0) {
-    realistic.sort((x, y) => x - y)
-    return realistic[realistic.length - 1]
-  }
+  const realistic = candidates.filter((c) => c.date >= lower && c.date <= upper)
+  const pool = realistic.length > 0 ? realistic : candidates
 
-  candidates.sort((x, y) => x - y)
-  return candidates[candidates.length - 1]
+  // The separator's convention wins; the most recent date breaks ties.
+  pool.sort((x, y) => x.rank - y.rank || y.date - x.date)
+  return pool[0].date
 }
 
 function candidateDate(year, month, day) {
@@ -331,6 +336,47 @@ function firstLabeledText(text, labelRegex, valueRegex) {
   return null
 }
 
+/**
+ * Finds the value written AFTER a label on the same line.
+ *
+ * Unlike `firstLabeledText`, the label match is consumed entirely and the
+ * separator that follows it is stripped, so a line like
+ *   "Product Name: Samsung Washing Machine"
+ * yields "Samsung Washing Machine" — not the label's own trailing word
+ * ("Name"), which is the bug that left the product name wrong/missing.
+ *
+ * Returns null when nothing usable follows the label, so a missing field is
+ * left blank rather than filled with placeholder text.
+ *
+ * @param {string} text
+ * @param {RegExp} labelRegex  Matches the label (e.g. /\bbrand\b/i).
+ * @param {{ min?: number, max?: number, pattern?: RegExp }} [options]
+ */
+function valueAfterLabel(text, labelRegex, options = {}) {
+  const min = options.min ?? 2
+  const max = options.max ?? 150
+  const lines = text.split(/\r?\n/)
+
+  for (const line of lines) {
+    const labelMatch = line.match(labelRegex)
+    if (!labelMatch) continue
+
+    const afterLabel = line.slice(labelMatch.index + labelMatch[0].length)
+    // Drop the separator (":", "-", "#", "=") and its surrounding spacing.
+    const value = afterLabel
+      .replace(/^[\s:=\-–—#.]+/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[\s,;:.-]+$/, '')
+
+    if (value.length < min || value.length > max) continue
+    if (options.pattern && !options.pattern.test(value)) continue
+    return value
+  }
+
+  return null
+}
+
 function firstUnlabeledAllCapsLine(text) {
   const lines = text.split(/\r?\n/)
   for (const line of lines) {
@@ -406,17 +452,42 @@ function extractSuggestions(text) {
     matched.seller = seller.replace(/\s+/g, ' ').trim()
   }
 
-  // Product name — labelled product/item/name line.
-  const name = firstLabeledText(
+  // Product name — the value after a "Product Name"/"Item"/"Description"
+  // label, consumed whole so the label word itself is never returned.
+  const productName = valueAfterLabel(
     text,
-    /\b(?:product|item|mobile|refrigerator|washing|tv|laptop|ac|air\s*cond|microwave|oven|camera|printer|monitor|tablet|headphone|earphone|speaker|mixer|grinder|headset|keyboard|mouse|charger|cable|battery|adapter)\b/i,
-    /\b([A-Z][\w&\s.'\-]{3,80})\b/i,
+    /\b(?:product\s*(?:name|title)|item\s*(?:name|title|desc(?:ription)?)|product\s*desc(?:ription)?|item|description)\b/i,
+    { min: 3, max: 120 },
   )
-  if (name) {
-    matched.productName = name.replace(/\s+/g, ' ').trim()
+  if (productName) {
+    matched.productName = productName
   }
 
-  // Fallback: if no product name yet, use an all-caps line as a hint.
+  // Brand — "Brand: Samsung" / "Make - Samsung" / "Manufacturer Samsung".
+  const brand = valueAfterLabel(text, /\b(?:brand|make|manufacturer|mfg)\b/i, {
+    min: 2,
+    max: 80,
+  })
+  if (brand) matched.brand = brand
+
+  // Model number — "Model No: WA70BG4441BD" / "Model Number ..." / "Model ...".
+  const modelNumber = valueAfterLabel(
+    text,
+    /\b(?:model\s*(?:no\.?|number|#)?|mdl\s*(?:no\.?|#)?)\b/i,
+    { min: 2, max: 100 },
+  )
+  if (modelNumber) matched.modelNumber = modelNumber
+
+  // Serial number — "Serial No: 9X3K821100" / "S/N" / "IMEI".
+  const serialNumber = valueAfterLabel(
+    text,
+    /\b(?:serial\s*(?:no\.?|number|#)?|sr\.?\s*no\.?|s\/n|imei)\b/i,
+    { min: 3, max: 100 },
+  )
+  if (serialNumber) matched.serialNumber = serialNumber
+
+  // Fallback: only when no labelled product name was found, use an all-caps
+  // line as a hint. Never overwrite a real labelled value.
   if (!matched.productName) {
     const fallback = firstUnlabeledAllCapsLine(text)
     if (fallback) matched.productName = fallback

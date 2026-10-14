@@ -245,6 +245,64 @@ describe('ocrScanner', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Field-mapping: real invoice labels must reach the right form field.
+// Regression for the review form opening with blank/wrong fields.
+// ---------------------------------------------------------------------------
+
+describe('ocrScanner field mapping', () => {
+  const INVOICE = [
+    'TAX INVOICE',
+    'Croma Retail Store',
+    'Invoice No: INV-2024-000123',
+    'Invoice Date: 12-05-2024',
+    'Sold By: Croma, Hyderabad',
+    'Product Name: Samsung Washing Machine',
+    'Brand: Samsung',
+    'Model No: WA70BG4441BD',
+    'Serial No: 9X3K821100',
+    'Subtotal: 42,000.00',
+    'Total: Rs. 45,000.00',
+    'Warranty: 24 months',
+  ].join('\n')
+
+  test('maps every labelled value to its field', () => {
+    const s = ocr.extractSuggestions(INVOICE)
+    assert.equal(s.productName, 'Samsung Washing Machine')
+    assert.equal(s.brand, 'Samsung')
+    assert.equal(s.modelNumber, 'WA70BG4441BD')
+    assert.equal(s.serialNumber, '9X3K821100')
+    assert.equal(s.seller, 'Croma, Hyderabad')
+    assert.equal(s.invoiceNumber, 'INV-2024-000123')
+    assert.equal(s.purchasePrice, 45000)
+    assert.equal(s.warrantyMonths, 24)
+  })
+
+  test('never returns the label word itself as the product name', () => {
+    const s = ocr.extractSuggestions('Product Name: Samsung Washing Machine')
+    assert.notEqual(s.productName, 'Name')
+    assert.equal(s.productName, 'Samsung Washing Machine')
+  })
+
+  test('reads a day-first date written with dashes', () => {
+    const s = ocr.extractSuggestions('Invoice Date: 12-05-2024\nTotal Rs. 1000')
+    assert.equal(s.purchaseDate, '2024-05-12')
+  })
+
+  test('reads model and serial without a colon separator', () => {
+    const s = ocr.extractSuggestions('Model Number WA70BG4441BD\nSerial Number 9X3K821100')
+    assert.equal(s.modelNumber, 'WA70BG4441BD')
+    assert.equal(s.serialNumber, '9X3K821100')
+  })
+
+  test('does not invent brand, model or serial when they are absent', () => {
+    const s = ocr.extractSuggestions('Invoice No: INV-001\nTotal Rs. 500')
+    assert.equal(s.brand, undefined)
+    assert.equal(s.modelNumber, undefined)
+    assert.equal(s.serialNumber, undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Scan service validation rules
 // ---------------------------------------------------------------------------
 

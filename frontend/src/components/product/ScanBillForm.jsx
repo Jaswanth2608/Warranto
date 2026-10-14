@@ -114,15 +114,23 @@ export function ScanBillForm({ initialProductId, onCreated }) {
     try {
       const res = await scanService.scan(productId || undefined, file)
       setScan(res.data)
+      // Map every suggestion the API can return onto its form field. Values
+      // are only ever copied from the scan result — a field the OCR could not
+      // read stays at its previous (usually empty) value instead of being
+      // invented. Each key uses `|| prev[...]` so an empty suggestion never
+      // wipes what the user has already typed.
+      const suggestions = res.data.suggestions || {}
       setForm((prev) => ({
         ...prev,
-        name: res.data.suggestions?.productName || prev.name,
-        brand: res.data.suggestions?.brand || prev.brand,
-        seller: res.data.suggestions?.seller || prev.seller,
-        purchaseDate: res.data.suggestions?.purchaseDate || prev.purchaseDate,
-        purchasePrice: res.data.suggestions?.purchasePrice != null ? String(res.data.suggestions.purchasePrice) : prev.purchasePrice,
-        warrantyMonths: res.data.suggestions?.warrantyMonths != null ? String(res.data.suggestions.warrantyMonths) : prev.warrantyMonths,
-        invoiceNumber: res.data.suggestions?.invoiceNumber || prev.invoiceNumber,
+        name: suggestions.productName || prev.name,
+        brand: suggestions.brand || prev.brand,
+        modelNumber: suggestions.modelNumber || prev.modelNumber,
+        serialNumber: suggestions.serialNumber || prev.serialNumber,
+        seller: suggestions.seller || prev.seller,
+        purchaseDate: suggestions.purchaseDate || prev.purchaseDate,
+        purchasePrice: suggestions.purchasePrice != null ? String(suggestions.purchasePrice) : prev.purchasePrice,
+        warrantyMonths: suggestions.warrantyMonths != null ? String(suggestions.warrantyMonths) : prev.warrantyMonths,
+        invoiceNumber: suggestions.invoiceNumber || prev.invoiceNumber,
       }))
       setStep('review')
       toast.success('Bill scanned. Review the suggested fields below.')
@@ -344,8 +352,9 @@ export function ScanBillForm({ initialProductId, onCreated }) {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Category">
+                <Field label="Category" htmlFor="scan-category">
                   <Select
+                    id="scan-category"
                     value={form.category}
                     onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}
                   >
@@ -356,8 +365,9 @@ export function ScanBillForm({ initialProductId, onCreated }) {
                     ))}
                   </Select>
                 </Field>
-                <Field label="Warranty type">
+                <Field label="Warranty type" htmlFor="scan-warranty-type">
                   <Select
+                    id="scan-warranty-type"
                     value={form.warrantyType}
                     onChange={(e) => setForm((prev) => ({ ...prev, warrantyType: e.target.value }))}
                   >

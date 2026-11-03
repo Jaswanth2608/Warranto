@@ -4,6 +4,7 @@ import { Bell, ChevronDown, ChevronRight, LogOut, Menu, Settings, User } from 'l
 
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '../components/ui'
 import { LogoMark } from './Logo'
+import LiveIndicator from './LiveIndicator'
 import { NAV_ITEMS, getPageMeta, getProductIdFromPath } from '../utils/navigation'
 import { notifications as initialNotifications } from '../data/notifications'
 import { useAuth } from '../context/AuthContext'
@@ -86,6 +87,8 @@ export function Topbar({ onOpenMenu }) {
         </nav>
 
         <div className="flex items-center gap-1">
+          <LiveIndicator />
+
           <Dropdown
             width="w-[320px] sm:w-96"
             trigger={

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 
 import App from './App.jsx'
 import { AuthProvider } from './context/AuthContext.jsx'
+import { LiveProvider } from './context/LiveContext.jsx'
 import { ToastProvider } from './context/ToastContext.jsx'
 import { ProductStoreProvider } from './context/ProductStore.jsx'
 
@@ -14,9 +15,11 @@ createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <ToastProvider>
         <AuthProvider>
-          <ProductStoreProvider>
-            <App />
-          </ProductStoreProvider>
+          <LiveProvider>
+            <ProductStoreProvider>
+              <App />
+            </ProductStoreProvider>
+          </LiveProvider>
         </AuthProvider>
       </ToastProvider>
     </BrowserRouter>

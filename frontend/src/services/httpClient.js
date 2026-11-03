@@ -32,7 +32,9 @@ if (!configuredBaseUrl && import.meta.env.PROD) {
   )
 }
 
-const apiBaseUrl =
+// Exported so the live-update stream (which uses fetch, not axios) talks to the
+// same origin as every other API call.
+export const apiBaseUrl =
   configuredBaseUrl || (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api')
 
 // Endpoints where a 401 is a normal "wrong credentials" answer handled by the

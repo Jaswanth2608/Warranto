@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from './AuthContext'
 import { useLiveResource } from '../hooks/useLiveResource'
+import { useToday } from '../hooks/useClock'
 import { productService } from '../services/productService'
 import { billService } from '../services/billService'
 
@@ -29,6 +30,10 @@ export function ProductStoreProvider({ children }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(null)
   const [error, setError] = useState(null)
   const [reloadToken, setReloadToken] = useState(0)
+
+  // Every screen derives warranty status from calendar dates, so one day ticker
+  // here re-renders all consumers exactly when "today" changes.
+  const today = useToday()
 
   const requestRef = useRef(0)
   const refreshTimer = useRef(null)
@@ -178,6 +183,7 @@ export function ProductStoreProvider({ children }) {
       loading,
       syncing,
       lastSyncedAt,
+      today,
       error,
       retry,
       refresh,
@@ -194,6 +200,7 @@ export function ProductStoreProvider({ children }) {
       loading,
       syncing,
       lastSyncedAt,
+      today,
       error,
       retry,
       refresh,

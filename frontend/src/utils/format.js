@@ -6,21 +6,35 @@ const currencyFormatter = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 0,
 })
 
-const compactCurrencyFormatter = new Intl.NumberFormat('en-IN', {
-  style: 'currency',
-  currency: 'INR',
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
-
 export function formatCurrency(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
   return currencyFormatter.format(Number(value))
 }
 
+/** Drops a trailing ".0" so values read as ₹30K, not ₹30.0K. */
+function trimUnit(value) {
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+/**
+ * Indian compact currency: ₹950, ₹30K, ₹3L, ₹1.2Cr.
+ *
+ * Built explicitly instead of using Intl's compact notation, because en-IN
+ * compact renders thousands as "T" (30,000 → ₹30T), which reads like trillions
+ * to anyone outside that locale dataset.
+ */
 export function formatCompactCurrency(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
-  return compactCurrencyFormatter.format(Number(value))
+
+  const amount = Number(value)
+  const abs = Math.abs(amount)
+  const sign = amount < 0 ? '-' : ''
+
+  if (abs >= 1e7) return `${sign}₹${trimUnit(abs / 1e7)}Cr`
+  if (abs >= 1e5) return `${sign}₹${trimUnit(abs / 1e5)}L`
+  if (abs >= 1e3) return `${sign}₹${trimUnit(abs / 1e3)}K`
+  return `${sign}₹${Math.round(abs)}`
 }
 
 export function formatFileSize(bytes) {

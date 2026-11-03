@@ -31,6 +31,7 @@ import {
   Badge,
 } from '../../components/ui'
 import { serviceService } from '../../services'
+import { useLiveResource } from '../../hooks/useLiveResource'
 import { formatDate, toISODate } from '../../utils/dates'
 import { formatCurrency } from '../../utils/format'
 import { SERVICE_TYPE_LABELS } from '../../utils/constants'
@@ -148,6 +149,11 @@ export function ServiceHistory({ productId, productName }) {
   useEffect(() => {
     load()
   }, [productId, serviceTypeFilter, sortOrder])
+
+  // A service record added in another tab (or on a phone) appears here too.
+  useLiveResource(['services', 'products'], () => {
+    load(false)
+  })
 
   const submit = async (e) => {
     e.preventDefault()

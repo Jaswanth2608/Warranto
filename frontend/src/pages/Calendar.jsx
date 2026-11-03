@@ -1,15 +1,32 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, AlertTriangle, CheckCircle, Clock } from 'lucide-react'
+import {
+  Calendar as CalendarIcon,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Plus,
+} from 'lucide-react'
 
-import { calendarService } from '../services'
+import { calendarService, taskService } from '../services'
 import { useAuth } from '../context/AuthContext'
+import { useProductStore } from '../context/ProductStore'
 import { useToast } from '../context/ToastContext'
-import { Badge, Button, Card, CardBody, EmptyState, ErrorState, Modal, Textarea, Select, Field, Input } from '../components/ui'
+import { useLiveResource } from '../hooks/useLiveResource'
+import {
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  EmptyState,
+  ErrorState,
+  Field,
+  Input,
+  Modal,
+  Select,
+} from '../components/ui'
 import { daysBetween, parseDate, startOfDay, toISODate } from '../utils/dates'
 import { formatDayLabel } from '../utils/warranty'
-import { STATUS } from '../utils/constants'
-import { getInitials } from '../utils/format'
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -43,6 +60,7 @@ function EventChip({ item, onClick }) {
 export default function Calendar() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { products, today: todayKey } = useProductStore()
   const toast = useToast()
 
   const [year, setYear] = useState(() => {
@@ -67,7 +85,8 @@ export default function Calendar() {
 
   const firstOfMonth = useMemo(() => new Date(year, month - 1, 1), [year, month])
   const lastOfMonth = useMemo(() => new Date(year, month, 0, 23, 59, 59, 999), [year, month])
-  const today = useMemo(() => startOfDay(), [])
+  // Re-derived when the calendar day changes, so "today" never goes stale.
+  const today = useMemo(() => startOfDay(todayKey), [todayKey])
 
   const daysInMonth = lastOfMonth.getDate()
   const startWeekday = firstOfMonth.getDay()
@@ -97,19 +116,29 @@ export default function Calendar() {
     return map
   }, [events])
 
-  const loadEvents = async (y, m) => {
+  const loadEvents = useCallback(async (y, m) => {
     setLoading(true)
     setError(null)
     try {
       const res = await calendarService.getEvents(y, m)
       setEvents(Array.isArray(res.data.events) ? res.data.events : [])
     } catch (err) {
-      setError(err?.response?.data?.message || err?.message || 'Unable to load calendar events.')
+      setError(err?.message || 'Unable to load calendar events.')
       setEvents([])
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  // Load the visible month on mount and whenever the user navigates.
+  useEffect(() => {
+    loadEvents(year, month)
+  }, [year, month, loadEvents])
+
+  // Another tab adding a product, reminder, task or service changes this grid.
+  useLiveResource(['products', 'reminders', 'tasks', 'services'], () => {
+    loadEvents(year, month)
+  })
 
   const handlePrev = () => {
     if (month === 1) {
@@ -142,48 +171,47 @@ export default function Calendar() {
   const closeDate = () => setSelectedDate(null)
 
   const openCreateForDate = (dateStr) => {
-    setNewTask((prev) => ({ ...prev, dueDate: dateStr }))
+    setNewTask((prev) => ({
+      ...prev,
+      dueDate: dateStr,
+      // Preselect the only product, or the one the selected day belongs to.
+      productId: prev.productId || (products.length === 1 ? products[0].id : ''),
+    }))
     setCreating(true)
   }
 
-  const validDateForInputs = useMemo(
-    () => (newTask.dueDate ? parseDate(newTask.dueDate) : null),
-    [newTask.dueDate],
-  )
+  const totalEvents = events.reduce((sum, event) => sum + (event.items?.length ?? 0), 0)
 
   const submitNewTask = async (e) => {
     e.preventDefault()
     if (!newTask.title.trim() || !newTask.dueDate) return
 
+    if (!newTask.productId) {
+      toast.warning('Choose the product this task belongs to.')
+      return
+    }
+
     try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          product: newTask.productId || '',
-          title: newTask.title.trim(),
-          description: '',
-          dueDate: newTask.dueDate,
-          priority: newTask.priority,
-        }),
+      const res = await taskService.create({
+        product: newTask.productId,
+        title: newTask.title.trim(),
+        description: '',
+        dueDate: newTask.dueDate,
+        priority: newTask.priority,
       })
-      const data = await res.json()
-      if (!res.ok) {
-        toast.error(data?.message || 'Could not create task.')
-        return
-      }
+
       toast.success('Task added to calendar.')
       setCreating(false)
-      setNewTask({ title: '', dueDate: newTask.dueDate, priority: 'medium', productId: '' })
-      loadEvents(year, month)
+      setNewTask({ title: '', dueDate: newTask.dueDate, priority: 'medium', productId: newTask.productId })
+      await loadEvents(year, month)
       if (selectedDate) {
         setSelectedDate((prev) => ({
           ...prev,
-          items: [...(prev?.items ?? []), { ...data.task, type: 'task', priority: data.task.priority }],
+          items: [...(prev?.items ?? []), { ...res.data.task, type: 'task', priority: res.data.task.priority }],
         }))
       }
-    } catch {
-      toast.error('Could not create task.')
+    } catch (err) {
+      toast.error(err?.message || 'Could not create task.')
     }
   }
 
@@ -238,7 +266,9 @@ export default function Calendar() {
             ) : error ? (
               <span className="text-[12.5px] text-danger-700">{String(error)}</span>
             ) : (
-              <span className="text-[12.5px] text-muted">{events.length} event{daysInMonth === 1 ? '' : 's'} this month</span>
+              <span className="text-[12.5px] text-muted">
+                {totalEvents} {totalEvents === 1 ? 'event' : 'events'} this month
+              </span>
             )}
           </div>
 
@@ -252,7 +282,7 @@ export default function Calendar() {
             <ErrorState onRetry={() => loadEvents(year, month)} />
           ) : weeks.length === 0 ? (
             <EmptyState
-              icon={Calendar}
+              icon={CalendarIcon}
               title="No events this month"
               description="Your warranty expiry dates, reminders, and action tasks that fall in this month will appear here."
             />
@@ -300,7 +330,7 @@ export default function Calendar() {
                                   : 'focus-visible:outline-brand-500'
                           }`}
                           disabled={muted}
-                          aria-label={day > 0 ? `${day} ${monthName}` : undefined}
+                          aria-label={!muted && day > 0 ? `${day} ${monthName}` : undefined}
                         >
                           <span
                             className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[12px] font-medium ${
@@ -311,7 +341,7 @@ export default function Calendar() {
                                   : 'text-muted'
                             }`}
                           >
-                            {day > 0 ? day : ''}
+                            {!muted && day > 0 ? day : ''}
                           </span>
                           <div className="mt-0.5 flex flex-col gap-0.5">
                             {items.slice(0, 3).map((item, idx) => (
@@ -416,7 +446,7 @@ export default function Calendar() {
         open={creating}
         onClose={() => setCreating(false)}
         title="Add action task"
-        description="Link it to a product if you want. Tasks without a product still show on your calendar."
+        description="Every action task belongs to one of your products, so the calendar can link it back."
         size="md"
         footer={
           <>
@@ -463,8 +493,12 @@ export default function Calendar() {
                 value={newTask.productId}
                 onChange={(e) => setNewTask((prev) => ({ ...prev, productId: e.target.value }))}
               >
-                <option value="">No product</option>
-                {[] /* product list is loaded elsewhere; keep form usable without it */}
+                <option value="">Choose a product</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}
+                  </option>
+                ))}
               </Select>
             </Field>
           )}

@@ -883,6 +883,26 @@ test('service records: create, list, cost totals, and ownership', async (t) => {
   assert.equal(listed.data.totalCost, 2000, 'totalCost must equal sum of service costs')
   assert.ok(listed.data.records.every((r) => Number(r.serviceCost) >= 0))
 
+  // The product page reads its service history through this route; without it
+  // the whole Service History section answered "route not found".
+  const byProduct = await call('GET', `/api/services/product/${productId}`, {
+    token: alice.token,
+  })
+  assert.equal(byProduct.status, 200, JSON.stringify(byProduct.data))
+  assert.equal(byProduct.data.count, 2)
+  assert.equal(byProduct.data.totalCost, 2000)
+  assert.ok(
+    byProduct.data.records.every((record) => String(record.product) === String(productId)),
+    'only this product\'s records may be returned',
+  )
+  assert.ok(byProduct.data.records[0].productName, 'records must include the product name')
+
+  const bobByProduct = await call('GET', `/api/services/product/${productId}`, { token: bob.token })
+  assert.equal(bobByProduct.status, 404, 'another account must not read this product history')
+
+  const badProductId = await call('GET', '/api/services/product/not-an-id', { token: alice.token })
+  assert.equal(badProductId.status, 400)
+
   const badType = await call('POST', '/api/services', {
     token: alice.token,
     body: { product: productId, serviceDate: ymd(TODAY), serviceType: 'banana', serviceCost: 1 },

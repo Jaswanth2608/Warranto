@@ -106,6 +106,10 @@ exports.listServiceRecordsByProduct = async (req, res, next) => {
     let totalCost = 0
     for (const record of records) {
       totalCost += Number(record.serviceCost || 0)
+      // The product page renders records straight from this response, so the
+      // product name travels with every record just like the list endpoint.
+      record.productName = product.name
+      record.productBrand = product.brand || null
     }
 
     res.json({

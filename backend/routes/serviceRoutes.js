@@ -102,6 +102,16 @@ const idRule = param('id').isMongoId().withMessage('Invalid service record id.')
 
 router.get('/', protect, requireDb, serviceController.listServiceRecords)
 
+// Must precede /:id or "product" would be treated as a service record id.
+router.get(
+  '/product/:productId',
+  [param('productId').isMongoId().withMessage('Invalid product id.')],
+  validate,
+  protect,
+  requireDb,
+  serviceController.listServiceRecordsByProduct,
+)
+
 router.get('/:id', [idRule], validate, protect, requireDb, serviceController.getServiceRecord)
 
 router.post(

@@ -1,4 +1,5 @@
-import { apiBaseUrl } from './httpClient'
+import { apiBaseUrl } from './httpClient.js'
+import { getLiveClientId } from '../utils/liveClientId.js'
 
 /**
  * Live change stream (Server-Sent Events).
@@ -19,6 +20,10 @@ import { apiBaseUrl } from './httpClient'
 const TOKEN_KEY = 'warranto.token'
 const RETRY_BASE_MS = 1200
 const RETRY_MAX_MS = 20000
+// The server pings every 25 s. Silence for longer than this means the socket is
+// half-open (laptop slept, network moved): reconnect instead of waiting for a
+// TCP timeout that may never arrive.
+const STALL_TIMEOUT_MS = 65_000
 
 /** Parses one SSE frame ("event: x\ndata: {...}\n id: y"). */
 export function parseFrame(raw) {
@@ -59,7 +64,12 @@ export function parseFrame(raw) {
  *   fetchImpl?: typeof fetch,
  * }} [options]
  */
-export function createLiveConnection({ onEvent, onStatus, fetchImpl } = {}) {
+export function createLiveConnection({
+  onEvent,
+  onStatus,
+  fetchImpl,
+  stallTimeoutMs = STALL_TIMEOUT_MS,
+} = {}) {
   const doFetch = fetchImpl || ((...args) => fetch(...args))
 
   let stopped = false
@@ -122,6 +132,8 @@ export function createLiveConnection({ onEvent, onStatus, fetchImpl } = {}) {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'text/event-stream',
+          // Identifies this tab so its own writes are not echoed back.
+          'X-Live-Client': getLiveClientId(),
         },
         cache: 'no-store',
         signal: controller.signal,
@@ -162,11 +174,38 @@ export function createLiveConnection({ onEvent, onStatus, fetchImpl } = {}) {
     const decoder = new TextDecoder()
     let buffer = ''
     let serverAskedRetryIn = 0
+    let stalled = false
+
+    // Any byte — including the server's comment ping — proves the connection is
+    // alive; a quiet stream longer than the timeout is treated as dead.
+    let lastActivityAt = Date.now()
+
+    const stallTimer = setInterval(() => {
+      if (Date.now() - lastActivityAt < stallTimeoutMs) return
+      stalled = true
+      try {
+        controller.abort()
+      } catch {
+        /* already gone */
+      }
+      // Aborting the fetch is enough in a browser; cancelling the reader too
+      // makes the hung read finish deterministically everywhere.
+      try {
+        reader.cancel().catch(() => {})
+      } catch {
+        /* already gone */
+      }
+    }, Math.max(250, Math.min(5_000, Math.floor(stallTimeoutMs / 4))))
+
+    const touch = () => {
+      lastActivityAt = Date.now()
+    }
 
     try {
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
+        touch()
 
         buffer += decoder.decode(value, { stream: true })
 
@@ -190,8 +229,11 @@ export function createLiveConnection({ onEvent, onStatus, fetchImpl } = {}) {
         }
       }
     } catch (error) {
-      if (stopped || error?.name === 'AbortError') return
-      // fall through to a retry
+      if (stopped) return
+      // A stall abort is not a user stop: report it and retry like a drop.
+      if (error?.name === 'AbortError' && !stalled) return
+    } finally {
+      clearInterval(stallTimer)
     }
 
     if (!stopped) {

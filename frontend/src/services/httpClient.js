@@ -1,5 +1,7 @@
 import axios from 'axios'
 
+import { getLiveClientId } from '../utils/liveClientId.js'
+
 /**
  * Central Axios instance for every API call.
  * - Base URL comes from VITE_API_BASE_URL (falls back to the local dev API).
@@ -21,11 +23,15 @@ const SESSION_KEY = 'warranto.session'
  *   silently calling localhost). Redeploy after setting the variable — Vite
  *   inlines it at build time.
  */
-const configuredBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '')
+// Vite fills import.meta.env at build time; tests import this module under
+// plain Node, where it does not exist.
+const env = import.meta.env ?? {}
+
+const configuredBaseUrl = String(env.VITE_API_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '')
 
-if (!configuredBaseUrl && import.meta.env.PROD) {
+if (!configuredBaseUrl && env.PROD) {
   console.error(
     '[config] VITE_API_BASE_URL is not set — this production build has no API URL. ' +
       'Set it in Vercel → Settings → Environment Variables (e.g. https://<your-render-service>.onrender.com/api) and redeploy.',
@@ -35,7 +41,7 @@ if (!configuredBaseUrl && import.meta.env.PROD) {
 // Exported so the live-update stream (which uses fetch, not axios) talks to the
 // same origin as every other API call.
 export const apiBaseUrl =
-  configuredBaseUrl || (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api')
+  configuredBaseUrl || (env.PROD ? '/api' : 'http://localhost:5000/api')
 
 // Endpoints where a 401 is a normal "wrong credentials" answer handled by the
 // page (or a rejected third-party identity) rather than an expired session.
@@ -58,6 +64,8 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) config.headers.Authorization = `Bearer ${token}`
+  // Lets the API skip this tab when fanning out the change it just made.
+  config.headers['X-Live-Client'] = getLiveClientId()
   return config
 })
 

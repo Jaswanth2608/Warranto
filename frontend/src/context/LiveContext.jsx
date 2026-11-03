@@ -35,8 +35,10 @@ export function LiveProvider({ children }) {
   const { isAuthenticated } = useAuth()
 
   const [status, setStatus] = useState(isAuthenticated ? 'connecting' : 'signed-out')
+  const [retryInMs, setRetryInMs] = useState(null)
   const [lastEventAt, setLastEventAt] = useState(null)
   const [lastSyncedAt, setLastSyncedAt] = useState(null)
+  const [lastChange, setLastChange] = useState(null)
 
   const handlersRef = useRef(new Map())
   const connectionRef = useRef(null)
@@ -74,6 +76,8 @@ export function LiveProvider({ children }) {
   const handleEvent = useCallback(
     (event) => {
       setLastEventAt(new Date().toISOString())
+      // Only real changes are worth showing; a resync is our own bookkeeping.
+      if (event?.type === 'change') setLastChange(event)
       dispatch(event)
     },
     [dispatch],
@@ -97,7 +101,10 @@ export function LiveProvider({ children }) {
     setStatus('connecting')
     const connection = createLiveConnection({
       onEvent: handleEvent,
-      onStatus: ({ state }) => setStatus(state),
+      onStatus: ({ state, retryInMs: retry }) => {
+        setStatus(state)
+        setRetryInMs(typeof retry === 'number' ? retry : null)
+      },
     })
     connectionRef.current = connection
     connection.start()
@@ -164,13 +171,15 @@ export function LiveProvider({ children }) {
     () => ({
       status,
       isLive: status === 'live',
+      retryInMs,
       lastEventAt,
       lastSyncedAt,
+      lastChange,
       subscribe,
       refreshAll,
       reconnectNow,
     }),
-    [status, lastEventAt, lastSyncedAt, subscribe, refreshAll, reconnectNow],
+    [status, retryInMs, lastEventAt, lastSyncedAt, lastChange, subscribe, refreshAll, reconnectNow],
   )
 
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>

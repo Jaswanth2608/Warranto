@@ -571,6 +571,11 @@ test('reminder: create, list, get, delete, and do-not-create for expired product
   const productId = product.id || product._id
   const expectedExpiry = product.warrantyExpiryDate
 
+  // Saving a product now provisions its milestones automatically. This test is
+  // about the manual POST path, so start from an empty milestone set.
+  const Reminder = require('../models/Reminder')
+  await Reminder.deleteMany({ userId: alice.userId, product: productId })
+
   const created = await call('POST', '/api/reminders', {
     token: alice.token,
     body: { product: productId, milestoneDays: 90 },
@@ -733,6 +738,83 @@ test('calendar: events are scoped to the authenticated user', async (t) => {
   const titlesAfter = eventsAfter.data.events.flatMap((e) => e.items || []).map((i) => i.title)
   assert.ok(!titlesAfter.some((title) => title.includes('Inside Product')),
     'deleted product must disappear from the calendar')
+})
+
+test('saving a warranty provisions reminder milestones and the calendar shows them', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('auto-milestones')
+  const Reminder = require('../models/Reminder')
+
+  // One month of cover: only the 7-day milestone is still ahead of today.
+  const product = await createProduct(alice.token, {
+    name: 'Milestone Product',
+    purchaseDate: ymd(TODAY),
+    warrantyMonths: 1,
+  })
+  const productId = product.id || product._id
+
+  const before = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.ok(before.length > 0, 'creating a product must plan the milestones still ahead')
+
+  const sevenDay = before.find((reminder) => reminder.targetMilestone === 7)
+  assert.ok(sevenDay, 'the nearest milestone must be planned')
+
+  const firstTarget = new Date(sevenDay.targetDate).getTime()
+
+  // The calendar is the user-facing proof that provisioning happened.
+  const milestoneMonth = new Date(sevenDay.targetDate)
+  const events = await call('GET', '/api/calendar/events', {
+    token: alice.token,
+    qs: { year: milestoneMonth.getFullYear(), month: milestoneMonth.getMonth() + 1 },
+  })
+  assert.equal(events.status, 200, JSON.stringify(events.data))
+  const reminderItems = events.data.events
+    .flatMap((event) => event.items || [])
+    .filter((item) => item.type === 'reminder_milestone')
+  assert.ok(
+    reminderItems.some((item) => String(item.product?.id) === String(productId)),
+    'the planned milestone must appear on the calendar',
+  )
+
+  // Editing the warranty length must move the milestones, not leave the old ones.
+  const patched = await call('PATCH', `/api/products/${productId}`, {
+    token: alice.token,
+    body: { warrantyMonths: 24 },
+  })
+  assert.equal(patched.status, 200, JSON.stringify(patched.data))
+
+  const after = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.equal(after.length, 3, 'a longer warranty plans three future milestones')
+  assert.deepEqual(
+    after.map((reminder) => reminder.targetMilestone).sort((a, b) => b - a),
+    [90, 30, 7],
+  )
+  const rescheduled = after.find((reminder) => reminder.targetMilestone === 7)
+  assert.notEqual(
+    new Date(rescheduled.targetDate).getTime(),
+    firstTarget,
+    'a changed warranty length must move the milestones',
+  )
+  assert.ok(
+    after.every((reminder) => new Date(reminder.targetDate).getTime() > Date.now() - 86400000),
+    'all rescheduled milestones must still be ahead',
+  )
+
+  // Deleting the product removes the records that can no longer refer to it.
+  const task = await call('POST', '/api/tasks', {
+    token: alice.token,
+    body: { product: productId, title: 'Check the milestone', dueDate: ymd(TODAY) },
+  })
+  assert.equal(task.status, 201, JSON.stringify(task.data))
+  const taskId = task.data.task.id || task.data.task._id
+
+  const removed = await call('DELETE', `/api/products/${productId}`, { token: alice.token })
+  assert.equal(removed.status, 200, JSON.stringify(removed.data))
+
+  assert.equal(await Reminder.countDocuments({ product: productId }), 0, 'milestones must go with the product')
+  const orphanTask = await call('GET', `/api/tasks/${taskId}`, { token: alice.token })
+  assert.equal(orphanTask.status, 404, 'tasks must go with the product')
 })
 
 test('calendar: invalid year/month and missing token are rejected', async (t) => {

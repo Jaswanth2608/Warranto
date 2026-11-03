@@ -547,6 +547,10 @@ test('scheduler tick selects due pending reminders and records outcomes', async 
   const now = new Date()
 
   const product = await createProduct(alice.token, { purchaseDate: '2026-01-01', warrantyMonths: 12 })
+
+  // Product creation provisions its milestones; this test builds its own set.
+  await Reminder.deleteMany({ userId: alice.userId, product: product.id || product._id })
+
   const futureReminder = await createReminderRecord(
     alice.userId,
     product.id || product._id,
@@ -747,6 +751,11 @@ test('a permanently ineligible reminder is settled immediately', async (t) => {
   const alice = await register('permanent-skip')
   const product = await createProduct(alice.token)
   const productId = product.id || product._id
+
+  // Creating a product now provisions its milestones, so clear them to give
+  // this test the single overdue reminder it is about.
+  await Reminder.deleteMany({ userId: alice.userId, product: productId })
+
   const reminderId = (
     await createReminderRecord(alice.userId, productId, 30, new Date(Date.now() - 86400000))
   )._id
@@ -938,6 +947,11 @@ test('products with a missing or expired warranty expiry date are never schedule
 
   // Missing expiry — the server could not derive one.
   await Product.updateOne({ _id: productId }, { $set: { warrantyExpiryDate: null } })
+
+  // A product created through the API already provisioned its milestones; this
+  // test is about what a pass does once the expiry is gone.
+  await Reminder.deleteMany({ userId: alice.userId, product: productId })
+
   const stats = await provisionReminders()
   assert.ok(
     stats.invalid >= 1,

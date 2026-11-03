@@ -598,7 +598,10 @@ async function runTick(transporter, options = {}) {
  *   as "already exists" instead of failing the tick.
  * - A single failing product is logged and skipped rather than aborting the pass.
  *
- * @param {{ now?: Date }} [options]
+ * @param {{ now?: Date, productId?: string, replace?: boolean }} [options]
+ *   productId limits the pass to one product (used right after create/update).
+ *   replace drops that product's untouched reminders first, so editing a
+ *   warranty length moves the milestones instead of leaving the old dates.
  * @returns {Promise<{products: number, created: number, existing: number,
  *   skipped: number, invalid: number, expired: number, failed: number}>}
  */
@@ -628,13 +631,28 @@ async function provisionReminders(options = {}) {
   // warrantyExpiryDate is a YYYY-MM-DD string, so a lexicographic range query is
   // a correct date range and naturally excludes null/empty values.
 
+  const productFilter = { warrantyExpiryDate: { $gte: todayYmd } }
+  if (options.productId) productFilter._id = options.productId
+
   // Diagnostic count: products that can never be reminded because the server
   // could not derive a warranty expiry date. Never treated as an error.
-  stats.invalid = await Product.countDocuments({
-    $or: [{ warrantyExpiryDate: null }, { warrantyExpiryDate: '' }],
-  }).catch(() => 0)
+  const invalidFilter = { $or: [{ warrantyExpiryDate: null }, { warrantyExpiryDate: '' }] }
+  if (options.productId) invalidFilter._id = options.productId
+  stats.invalid = await Product.countDocuments(invalidFilter).catch(() => 0)
 
-  const products = await Product.find({ warrantyExpiryDate: { $gte: todayYmd } })
+  // A changed warranty length makes previously planned milestones wrong.
+  // Only untouched reminders are removed — anything already sent stays as the
+  // record of what the user was told.
+  if (options.productId && options.replace) {
+    await Reminder.deleteMany({
+      product: options.productId,
+      status: 'pending',
+      notifiedAt: null,
+      sentCount: 0,
+    }).catch(() => {})
+  }
+
+  const products = await Product.find(productFilter)
     .select('name user warrantyExpiryDate')
     .lean()
 

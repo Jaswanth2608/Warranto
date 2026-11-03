@@ -43,34 +43,35 @@ exports.listReminders = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean()
 
-    const enriched = await Promise.all(
-      reminders.map(async (r) => {
-        let productName = null
-        let productSerialNumber = null
+    // One query for every referenced product instead of one per reminder.
+    const productIds = [...new Set(reminders.filter((r) => r.product).map((r) => String(r.product)))]
+    const products = await Product.find({ _id: { $in: productIds }, user: req.user.id })
+      .select('name serialNumber')
+      .lean()
+      .catch(() => [])
+    const byId = new Map(products.map((product) => [String(product._id), product]))
 
-        if (r.product) {
-          const product = await Product.findById(r.product).select('name serialNumber').lean().catch(() => null)
-          productName = product ? product.name : null
-          productSerialNumber = product ? (product.serialNumber || null) : null
-        }
+    const enriched = reminders.map((r) => {
+      const product = r.product ? byId.get(String(r.product)) : null
+      const productName = product ? product.name : null
+      const productSerialNumber = product ? product.serialNumber || null : null
 
-        return {
-          _id: r._id.toString(),
-          userId: r.userId.toString(),
-          product: r.product ? r.product.toString() : null,
-          productName,
-          productSerialNumber,
-          title: r.title || null,
-          targetMilestone: r.targetMilestone,
-          targetDate: r.targetDate ? r.targetDate.toISOString().slice(0, 10) : null,
-          notifiedAt: r.notifiedAt ? r.notifiedAt.toISOString().slice(0, 10) : null,
-          isNotified: r.notifiedAt != null,
-          status: r.status || null,
-          createdAt: r.createdAt.toISOString().slice(0, 10),
-          updatedAt: r.updatedAt.toISOString().slice(0, 10),
-        }
-      }),
-    )
+      return {
+        _id: r._id.toString(),
+        userId: r.userId.toString(),
+        product: r.product ? r.product.toString() : null,
+        productName,
+        productSerialNumber,
+        title: r.title || null,
+        targetMilestone: r.targetMilestone,
+        targetDate: r.targetDate ? r.targetDate.toISOString().slice(0, 10) : null,
+        notifiedAt: r.notifiedAt ? r.notifiedAt.toISOString().slice(0, 10) : null,
+        isNotified: r.notifiedAt != null,
+        status: r.status || null,
+        createdAt: r.createdAt.toISOString().slice(0, 10),
+        updatedAt: r.updatedAt.toISOString().slice(0, 10),
+      }
+    })
 
     res.json({ success: true, count: enriched.length, reminders: enriched })
   } catch (error) {

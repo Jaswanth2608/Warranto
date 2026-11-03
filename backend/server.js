@@ -176,6 +176,22 @@ async function startServer() {
   // Start the reminder scheduler only once the database is reachable.
   // If SMTP is not configured, the scheduler stays idle and logs a clear reason.
   if (connected) {
+    // Milestones power the calendar, not only email, so they are provisioned
+    // once at boot even on a server without SMTP configured.
+    reminderScheduler
+      .provisionReminders()
+      .then((stats) => {
+        if (stats.created > 0) {
+          console.log(`[reminder] Provisioned ${stats.created} new reminder milestone(s).`)
+        }
+      })
+      .catch((error) => {
+        console.warn(
+          '[reminder] Startup provisioning failed:',
+          error instanceof Error ? error.message : String(error),
+        )
+      })
+
     reminderSchedulerHandle = reminderScheduler.startScheduler(server)
   }
 

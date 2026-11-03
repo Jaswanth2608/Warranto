@@ -13,11 +13,32 @@ function ymdKey(date) {
   return `${year}-${month}-${day}`
 }
 
-function utcSafeDate(value) {
+/**
+ * Normalises a stored date to local midnight.
+ *
+ * Reminder.targetDate is a Date, while a product's warrantyExpiryDate is a
+ * YYYY-MM-DD string — treating the Date like a string used to produce an
+ * Invalid Date, which silently dropped every reminder from the calendar.
+ */
+function toLocalDay(value) {
   if (!value) return null
-  const d = value instanceof Date ? value : new Date(value + 'T00:00:00')
-  if (isNaN(d.getTime())) return null
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate())
+  }
+
+  const d = new Date(`${String(value).slice(0, 10)}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return null
   return d
+}
+
+/** Whole days from today to a local day (negative when in the past). */
+function daysFromToday(date) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  return Math.round((target.getTime() - today.getTime()) / 86400000)
 }
 
 /**
@@ -59,9 +80,13 @@ async function getCalendarEvents(req, res, next) {
       warrantyExpiryDate: { $exists: true, $ne: null },
     }).lean()
 
+    // Reminder records store only the product id; the calendar shows names, so
+    // keep one lookup table instead of parsing them out of a title.
+    const productNames = new Map(products.map((product) => [String(product._id), product.name]))
+
     for (const product of products) {
-      const expiryLocal = new Date(product.warrantyExpiryDate + 'T00:00:00')
-      if (isNaN(expiryLocal.getTime())) continue
+      const expiryLocal = toLocalDay(product.warrantyExpiryDate)
+      if (!expiryLocal) continue
 
       const y = expiryLocal.getFullYear()
       const m = expiryLocal.getMonth() + 1
@@ -89,9 +114,7 @@ async function getCalendarEvents(req, res, next) {
         title: `Warranty expires: ${product.name}`,
         subtitle: 'Warranty expiry',
         url: `/products/${product._id.toString()}`,
-        daysRemaining: Math.round(
-          (expiryLocal.getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000,
-        ),
+        daysRemaining: daysFromToday(expiryLocal),
         badge: 'danger',
       })
 
@@ -105,8 +128,8 @@ async function getCalendarEvents(req, res, next) {
     }).lean()
 
     for (const reminder of reminders) {
-      const targetLocal = new Date(reminder.targetDate + 'T00:00:00')
-      if (isNaN(targetLocal.getTime())) continue
+      const targetLocal = toLocalDay(reminder.targetDate)
+      if (!targetLocal) continue
       const key = ymdKey(targetLocal)
       if (!key) continue
 
@@ -118,23 +141,27 @@ async function getCalendarEvents(req, res, next) {
         items: [],
       }
 
-      const daysUntilTarget = Math.round(
-        (targetLocal.getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000,
-      )
+      const daysUntilTarget = daysFromToday(targetLocal)
 
       let badge = 'neutral'
       if (reminder.targetMilestone === 7) badge = 'danger'
       else if (reminder.targetMilestone === 30) badge = 'warning'
       else if (reminder.targetMilestone === 90) badge = 'brand'
 
+      const productId = reminder.product.toString()
+      const productName = productNames.get(productId) || null
+
       entry.items.push({
         type: 'reminder_milestone',
         product: {
-          id: reminder.product.toString(),
-          name: reminder.title ? reminder.title.split(':')[0].trim() : null,
+          id: productId,
+          name: productName,
         },
-        title: reminder.title || `Reminder: ${reminder.targetMilestone} days before expiry`,
+        title: productName
+          ? `${productName}: ${reminder.targetMilestone} days before expiry`
+          : reminder.title || `Reminder: ${reminder.targetMilestone} days before expiry`,
         subtitle: `${reminder.targetMilestone} days before expiry`,
+        productName,
         url: `/products/${reminder.product.toString()}`,
         daysUntilTarget,
         targetMilestone: reminder.targetMilestone,

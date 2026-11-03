@@ -33,6 +33,9 @@ const billRoutes = require('./routes/billRoutes')
 const taskRoutes = require('./routes/taskRoutes')
 const serviceRoutes = require('./routes/serviceRoutes')
 const scanRoutes = require('./routes/scanRoutes')
+const eventRoutes = require('./routes/eventRoutes')
+const { realtimeChanges } = require('./middleware/realtime')
+const { hub } = require('./lib/realtime')
 
 let reminderSchedulerHandle = null
 
@@ -86,6 +89,11 @@ if (process.env.NODE_ENV !== 'test') {
   })
 }
 
+// Live updates: every successful mutation made by a signed-in user publishes
+// a small change frame to that user's open streams (see lib/realtime.js).
+// Mounted before the feature routes so it observes their responses.
+app.use('/api', realtimeChanges)
+
 // ---------------------------------------------------------------------------
 // Health endpoints — no secrets, safe to expose.
 // ---------------------------------------------------------------------------
@@ -95,6 +103,7 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     service: 'Warranto API',
     uptime: Math.round(process.uptime()),
+    liveStreams: hub.total(),
     timestamp: new Date().toISOString(),
   })
 })
@@ -121,6 +130,7 @@ app.use('/api/reminders', reminderRoutes)
 app.use('/api/reminders/email', reminderEmailRoutes)
 app.use('/api/services', serviceRoutes)
 app.use('/api/scan', scanRoutes)
+app.use('/api/events', eventRoutes)
 app.get('/api/calendar/events', protect, requireDb, calendarController.getCalendarEvents)
 
 // Not-found and centralized error handling (always last).
@@ -187,6 +197,9 @@ async function startServer() {
     if (reminderSchedulerHandle?.task && typeof reminderSchedulerHandle.task.stop === 'function') {
       reminderSchedulerHandle.task.stop()
     }
+    // End open live-update streams so clients reconnect to the new instance
+    // instead of waiting on a dead socket.
+    hub.closeAll()
     server.close(async () => {
       await disconnectDB()
       process.exit(0)

@@ -26,8 +26,10 @@ function clockTime(iso) {
 }
 
 export function LiveIndicator() {
-  const { status, retryInMs, lastChange, lastSyncedAt, refreshAll, reconnectNow } = useLive()
-  const { syncing } = useProductStore()
+  const { status, retryInMs, lastChange, refreshAll, reconnectNow } = useLive()
+  // The catalogue knows when its last full read finished; the live provider
+  // only knows when it last asked for one.
+  const { syncing, lastSyncedAt } = useProductStore()
   const toast = useToast()
 
   if (status === 'signed-out' || status === 'unauthorized' || status === 'stopped') {

@@ -48,7 +48,11 @@ function EventChip({ item, onClick }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(event) => {
+        // The day cell is interactive too; this chip must not also open it.
+        event.stopPropagation()
+        onClick?.()
+      }}
       className={`inline-flex flex-col items-start rounded-[6px] px-2 py-1 text-left transition hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand-500 ${variant === 'danger' ? 'text-danger-700' : variant === 'warning' ? 'text-warning-700' : variant === 'brand' ? 'text-brand-400' : 'text-muted'}`}
     >
       <span className="text-[11px] font-medium leading-tight">{item.title}</span>
@@ -308,28 +312,34 @@ export default function Calendar() {
                       const nextMonth = day > daysInMonth
                       const muted = previousMonth || nextMonth
 
+                      const toggleDay = () => {
+                        if (muted) return
+                        if (selectedDate?.date === dateStr) closeDate()
+                        else openDate(dateStr, day)
+                      }
+
                       return (
-                        <button
+                        <div
                           key={day}
-                          type="button"
-                          onClick={() => {
-                            if (previousMonth || nextMonth) return
-                            if (selectedDate?.date === dateStr) {
-                              closeDate()
-                            } else {
-                              openDate(dateStr, day)
+                          role={muted ? undefined : 'button'}
+                          tabIndex={muted ? undefined : 0}
+                          onClick={toggleDay}
+                          onKeyDown={(event) => {
+                            if (muted) return
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              toggleDay()
                             }
                           }}
                           className={`relative min-h-[88px] px-1 text-left transition-colors focus-visible:outline-2 focus-visible:outline-brand-500 ${
                             muted
-                              ? 'bg-transparent text-muted/50 cursor-default focus-visible:outline-0'
+                              ? 'cursor-default bg-transparent text-muted/50 focus-visible:outline-0'
                               : isToday(day)
-                                ? 'bg-brand-500/8 focus-visible:outline-brand-500'
+                                ? 'cursor-pointer bg-brand-500/8 focus-visible:outline-brand-500'
                                 : isSelected(day)
-                                  ? 'bg-brand-500/10 focus-visible:outline-brand-500'
-                                  : 'focus-visible:outline-brand-500'
+                                  ? 'cursor-pointer bg-brand-500/10 focus-visible:outline-brand-500'
+                                  : 'cursor-pointer focus-visible:outline-brand-500'
                           }`}
-                          disabled={muted}
                           aria-label={!muted && day > 0 ? `${day} ${monthName}` : undefined}
                         >
                           <span
@@ -351,7 +361,7 @@ export default function Calendar() {
                               <span className="self-start text-[10px] font-medium text-muted">+{items.length - 3} more</span>
                             )}
                           </div>
-                        </button>
+                        </div>
                       )
                     })}
                   </div>

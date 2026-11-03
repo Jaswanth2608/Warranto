@@ -169,6 +169,34 @@ authenticated user (a foreign id answers `404`, never `403` with data).
 | `GET/POST /api/services` | Product-linked service records |
 | `POST /api/scan` | OCR a bill photo/PDF into field suggestions |
 | `GET /api/calendar/events?year=&month=` | Warranty expiries + reminders for one month |
+| `GET /api/events` | Long-lived Server-Sent Events stream of this account's changes |
+
+---
+
+## Live updates
+
+Every signed-in tab keeps one Server-Sent Events stream open (`GET /api/events`). When a
+request from that account succeeds, the API publishes a small frame naming the **resource**
+(`products`, `bills`, `tasks`, `reminders`, `services`) — never the row — and each tab
+revalidates it. A change made on a phone therefore appears on the laptop without a refresh,
+and a cached page can never be handed data the user was not allowed to fetch.
+
+What makes it feel reliable:
+
+- **Own writes are not echoed.** Each tab sends `X-Live-Client` on its requests and its
+  stream; the API skips that one stream, so saving a form does not trigger a redundant
+  refetch in the tab that saved it, while every other tab still updates immediately.
+- **Silence is treated as failure.** The server pings every 25 s; a stream that misses those
+  pings is torn down and re-opened with exponential backoff and jitter.
+- **Coming back is a resync.** Returning to a long-hidden tab, regaining connectivity, or
+  reconnecting triggers a full revalidation, so a suspended laptop heals without a reload.
+- **The UI says what is happening.** The header chip opens a panel with the connection state,
+  the last change and the last completed sync, plus manual refresh and reconnect actions.
+  Background refreshes stay silent; a record deleted in another tab raises a short toast.
+
+Transport code lives in `backend/lib/realtime.js` + `backend/middleware/realtime.js` and
+`frontend/src/services/liveService.js` + `frontend/src/context/LiveContext.jsx`; both sides
+have tests (`backend/tests/realtime.test.js`, `frontend/src/services/liveService.test.js`).
 
 ---
 

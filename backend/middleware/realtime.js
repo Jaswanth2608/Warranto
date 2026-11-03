@@ -69,12 +69,20 @@ function realtimeChanges(req, res, next) {
     const userId = req.user?._id ?? req.user?.id
     if (!userId) return
 
+    // The tab that made the change already applied the response; skip only
+    // that tab so the others find out immediately.
+    const clientId = req.get?.('x-live-client')
+
     try {
-      hub.publish(String(userId), {
-        type: 'change',
-        ...change,
-        at: new Date().toISOString(),
-      })
+      hub.publish(
+        String(userId),
+        {
+          type: 'change',
+          ...change,
+          at: new Date().toISOString(),
+        },
+        { exceptClientId: clientId },
+      )
     } catch (error) {
       // A realtime fan-out problem must never affect the API response that
       // has already been sent.

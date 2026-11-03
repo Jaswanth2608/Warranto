@@ -39,8 +39,11 @@ function streamEvents(req, res) {
 
   if (typeof res.flushHeaders === 'function') res.flushHeaders()
 
+  // The tab identifies itself so its own writes are not echoed back to it.
+  const clientId = hub.normalizeClientId(req.get?.('x-live-client'))
+
   // Subscribe before announcing readiness so the count includes this stream.
-  const unsubscribe = hub.subscribe(String(userId), res)
+  const unsubscribe = hub.subscribe(String(userId), res, { clientId })
 
   // Ask the browser client to come back after 3 s if the connection drops.
   res.write('retry: 3000\n\n')
@@ -51,6 +54,7 @@ function streamEvents(req, res) {
         connectedAt: new Date().toISOString(),
         heartbeatMs: DEFAULT_HEARTBEAT_MS,
         streams: hub.count(String(userId)),
+        clientId,
       },
     }),
   )

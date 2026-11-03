@@ -22,6 +22,16 @@ const DEFAULT_HEARTBEAT_MS = 25_000
 const MAX_CLIENTS_PER_USER = 12
 const MAX_BUFFERED_EVENTS = 64
 
+/**
+ * A tab identifier is opaque and client-chosen, so it is bounded and stripped
+ * of anything that could confuse a log or a header comparison.
+ */
+function normalizeClientId(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().slice(0, 64)
+  return /^[A-Za-z0-9._:-]+$/.test(trimmed) ? trimmed : null
+}
+
 /** Serialises one SSE frame. `data` is JSON, so it never contains newlines. */
 function formatFrame({ event = 'message', data, id }) {
   const lines = []
@@ -86,8 +96,12 @@ function createRealtimeHub(options = {}) {
   /**
    * Attaches a response to a user's stream.
    * Returns an unsubscribe function; call it from the request's "close" event.
+   *
+   * `clientId` identifies the browser tab, so a change made by that tab can be
+   * skipped when fanning out: it already has the server's answer, while every
+   * other tab and device still needs to know.
    */
-  function subscribe(userId, res) {
+  function subscribe(userId, res, { clientId } = {}) {
     if (!userId) throw new Error('subscribe() requires a user id')
 
     const key = String(userId)
@@ -110,7 +124,13 @@ function createRealtimeHub(options = {}) {
       }
     }
 
-    const client = { id: nextClientId++, userId: key, res, subscribedAt: new Date() }
+    const client = {
+      id: nextClientId++,
+      userId: key,
+      res,
+      clientId: normalizeClientId(clientId),
+      subscribedAt: new Date(),
+    }
     set.add(client)
     ensureHeartbeat()
 
@@ -125,15 +145,19 @@ function createRealtimeHub(options = {}) {
 
   /**
    * Publishes one change to every open tab of a user.
+   * `exceptClientId` skips the tab that made the change (it already applied
+   * the response), so it does not revalidate its own work.
    * Returns how many open streams received it (0 when nobody is listening).
    */
-  function publish(userId, payload) {
+  function publish(userId, payload, { exceptClientId } = {}) {
     const set = clientsOf(userId)
     if (!set || set.size === 0) return 0
 
+    const skip = normalizeClientId(exceptClientId)
     const frame = formatFrame({ event: 'change', data: payload })
     let delivered = 0
     for (const client of [...set]) {
+      if (skip && client.clientId === skip) continue
       if (write(client, frame)) delivered += 1
     }
     return delivered
@@ -169,10 +193,20 @@ function createRealtimeHub(options = {}) {
     }
   }
 
-  return { subscribe, publish, count, total, closeAll, formatFrame, maxClientsPerUser, maxBufferedEvents: MAX_BUFFERED_EVENTS }
+  return {
+    subscribe,
+    publish,
+    count,
+    total,
+    closeAll,
+    formatFrame,
+    normalizeClientId,
+    maxClientsPerUser,
+    maxBufferedEvents: MAX_BUFFERED_EVENTS,
+  }
 }
 
 /** Process-wide hub — one stream registry for the running API. */
 const hub = createRealtimeHub()
 
-module.exports = { createRealtimeHub, formatFrame, hub, DEFAULT_HEARTBEAT_MS }
+module.exports = { createRealtimeHub, formatFrame, normalizeClientId, hub, DEFAULT_HEARTBEAT_MS }

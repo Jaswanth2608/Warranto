@@ -101,6 +101,37 @@ test('publish delivers only to the matching user streams', () => {
   local.closeAll()
 })
 
+test('publish skips the tab that made the change', () => {
+  const local = createRealtimeHub({ heartbeatMs: 60_000 })
+  const author = fakeResponse()
+  const otherTab = fakeResponse()
+  const anonymous = fakeResponse()
+
+  local.subscribe('alice', author, { clientId: 'tab-1' })
+  local.subscribe('alice', otherTab, { clientId: 'tab-2' })
+  local.subscribe('alice', anonymous)
+
+  assert.equal(
+    local.publish('alice', { type: 'change', resource: 'products' }, { exceptClientId: 'tab-1' }),
+    2,
+  )
+  assert.equal(framesOf(author), '', 'the acting tab must not revalidate its own write')
+  assert.match(framesOf(otherTab), /"resource":"products"/)
+  assert.match(framesOf(anonymous), /"resource":"products"/, 'streams without an id still hear it')
+
+  local.closeAll()
+})
+
+test('a malformed client id is ignored instead of isolating a stream', () => {
+  const local = createRealtimeHub({ heartbeatMs: 60_000 })
+  const res = fakeResponse()
+
+  local.subscribe('user-7', res, { clientId: 'not a valid id\n' })
+  assert.equal(local.publish('user-7', { type: 'change' }, { exceptClientId: 'not a valid id\n' }), 1)
+
+  local.closeAll()
+})
+
 test('unsubscribing stops delivery and publish reports zero listeners', () => {
   const local = createRealtimeHub({ heartbeatMs: 60_000 })
   const res = fakeResponse()
@@ -227,6 +258,31 @@ test('realtimeChanges publishes only a successful authenticated change', () => {
 
   assert.equal(framesOf(stream), before, 'failed, anonymous and read requests publish nothing')
   off()
+})
+
+test('the acting tab is skipped when it identifies itself', () => {
+  const author = fakeResponse()
+  const otherTab = fakeResponse()
+  const offAuthor = hub.subscribe('user-8', author, { clientId: 'tab-a' })
+  const offOther = hub.subscribe('user-8', otherTab, { clientId: 'tab-b' })
+
+  const res = new EventEmitter()
+  res.statusCode = 201
+  const req = {
+    method: 'POST',
+    originalUrl: '/api/products',
+    user: { _id: 'user-8' },
+    get: (name) => (String(name).toLowerCase() === 'x-live-client' ? 'tab-a' : undefined),
+  }
+
+  realtimeChanges(req, res, () => {})
+  res.emit('finish')
+
+  assert.equal(framesOf(author), '')
+  assert.match(framesOf(otherTab), /"resource":"products"/)
+
+  offAuthor()
+  offOther()
 })
 
 // ---------------------------------------------------------------------------

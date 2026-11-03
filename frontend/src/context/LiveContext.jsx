@@ -9,7 +9,9 @@ import {
 } from 'react'
 
 import { useAuth } from './AuthContext'
+import { useToast } from './ToastContext'
 import { createLiveConnection } from '../services/liveService'
+import { describeLiveChange, shouldAnnounceChange } from '../utils/liveMessages'
 
 /**
  * Live-update provider.
@@ -33,6 +35,7 @@ const LiveContext = createContext(null)
 
 export function LiveProvider({ children }) {
   const { isAuthenticated } = useAuth()
+  const toast = useToast()
 
   const [status, setStatus] = useState(isAuthenticated ? 'connecting' : 'signed-out')
   const [retryInMs, setRetryInMs] = useState(null)
@@ -76,11 +79,25 @@ export function LiveProvider({ children }) {
   const handleEvent = useCallback(
     (event) => {
       setLastEventAt(new Date().toISOString())
+
       // Only real changes are worth showing; a resync is our own bookkeeping.
-      if (event?.type === 'change') setLastChange(event)
+      if (event?.type === 'change') {
+        setLastChange(event)
+
+        // Background refreshes stay silent; a record disappearing in another
+        // tab is surprising enough to explain.
+        const visible = typeof document === 'undefined' || document.visibilityState === 'visible'
+        if (shouldAnnounceChange(event, { visible })) {
+          const summary = describeLiveChange(event)
+          if (summary) {
+            toast.warning(summary.message, { title: summary.title, duration: 6000 })
+          }
+        }
+      }
+
       dispatch(event)
     },
-    [dispatch],
+    [dispatch, toast],
   )
 
   const refreshAll = useCallback(

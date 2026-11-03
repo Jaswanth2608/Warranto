@@ -4,6 +4,7 @@ import { Dropdown, DropdownItem, DropdownSeparator } from '../components/ui'
 import { useLive } from '../context/LiveContext'
 import { useProductStore } from '../context/ProductStore'
 import { useToast } from '../context/ToastContext'
+import { describeLiveChange } from '../utils/liveMessages'
 
 /**
  * Honest sync state for the header, with the controls to act on it.
@@ -14,15 +15,6 @@ import { useToast } from '../context/ToastContext'
  * means the stream dropped and the fallback (focus / manual reconnect) is in
  * charge. Opening it shows what last arrived and offers a manual refresh.
  */
-
-const RESOURCE_LABELS = {
-  products: 'Products',
-  bills: 'Bills',
-  tasks: 'Tasks',
-  reminders: 'Reminders',
-  services: 'Service history',
-  profile: 'Profile',
-}
 
 function clockTime(iso) {
   if (!iso) return 'Not yet'
@@ -56,9 +48,7 @@ export function LiveIndicator() {
         ? 'text-success-700'
         : 'text-muted'
 
-  const changeLabel = lastChange?.resource
-    ? `${RESOURCE_LABELS[lastChange.resource] ?? 'Your records'} ${lastChange.action ?? 'updated'}`
-    : 'Nothing yet'
+  const changeLabel = describeLiveChange(lastChange)?.title ?? 'Nothing yet'
 
   const handleRefresh = () => {
     refreshAll('manual')

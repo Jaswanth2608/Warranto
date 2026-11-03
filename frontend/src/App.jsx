@@ -1,21 +1,25 @@
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
+// The marketing and auth screens are the first paint, so they stay in the main
+// bundle. Every signed-in screen is loaded on demand — the app shell, its live
+// stream and the product cache are already running by the time one is opened.
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
-import Dashboard from './pages/Dashboard'
-import Products from './pages/Products'
-import AddProduct from './pages/AddProduct'
-import ProductDetails from './pages/ProductDetails'
-import EditProduct from './pages/EditProduct'
-import ExpiringSoon from './pages/ExpiringSoon'
-import Bills from './pages/Bills'
-import ScanBill from './pages/ScanBill'
-import Calendar from './pages/Calendar'
-import Profile from './pages/Profile'
-import Settings from './pages/Settings'
 import LegalPage from './pages/LegalPage'
+
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Products = lazy(() => import('./pages/Products'))
+const AddProduct = lazy(() => import('./pages/AddProduct'))
+const ProductDetails = lazy(() => import('./pages/ProductDetails'))
+const EditProduct = lazy(() => import('./pages/EditProduct'))
+const ExpiringSoon = lazy(() => import('./pages/ExpiringSoon'))
+const Bills = lazy(() => import('./pages/Bills'))
+const ScanBill = lazy(() => import('./pages/ScanBill'))
+const Calendar = lazy(() => import('./pages/Calendar'))
+const Profile = lazy(() => import('./pages/Profile'))
+const Settings = lazy(() => import('./pages/Settings'))
 import NotFound from './pages/NotFound'
 
 import AppLayout from './layouts/AppLayout'

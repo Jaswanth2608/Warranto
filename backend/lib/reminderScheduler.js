@@ -3,6 +3,9 @@
  *
  * What it does
  * - Runs on a node-cron schedule (see REMINDER_SCHEDULE in backend/.env).
+ * - First provisions the missing Reminder records for every saved product
+ *   (see provisionReminders), so products added through the normal add/edit
+ *   product flow are covered without anyone creating reminders by hand.
  * - Finds pending Reminder records whose targetDate has arrived.
  * - For each one it verifies the product still exists, the warranty is still
  *   active on the target date, and the user still has a valid email address and
@@ -32,10 +35,10 @@
  * - The scheduler keeps a handle so server shutdown can stop the cron timer.
  *
  * Testing
- * - Use POST /api/reminders/send-test with a valid reminder id to trigger a
- *   single reminder outside the schedule. That endpoint is intentionally
- *   separate from the scheduled path so it cannot be confused with production
- *   sends.
+ * - Use POST /api/reminders/email/send-test/:id with a valid reminder id to
+ *   trigger a single reminder outside the schedule. That endpoint is
+ *   intentionally separate from the scheduled path so it cannot be confused
+ *   with production sends.
  */
 
 const cron = require('node-cron')
@@ -572,9 +575,173 @@ async function runTick(transporter, options = {}) {
 }
 
 /**
- * Start the scheduler. Returns the cron task so it can be stopped on shutdown.
+ * Creates the Reminder records a saved product should have but does not.
+ *
+ * This is what makes the scheduled flow automatic: reminders are derived from
+ * the products the user already saved, instead of only from records someone
+ * created by hand through POST /api/reminders.
+ *
+ * Milestone selection — per product, with no reminder recorded yet for that
+ * milestone:
+ * - A milestone whose date is still ahead is created on its normal date.
+ * - If *every* milestone is already behind (the product was added with less
+ *   than the smallest interval left), a single catch-up reminder is created for
+ *   the nearest milestone, dated today, so the user is still told before the
+ *   warranty lapses. Only one catch-up is ever created, so a late product never
+ *   produces one email per missed milestone.
+ *
+ * Safe by construction:
+ * - Products with a missing or unparsable warrantyExpiryDate are skipped.
+ * - Products whose warranty has already expired are skipped.
+ * - Duplicates are prevented by an existence check plus the unique compound
+ *   index on { userId, product, targetMilestone }; a lost race (E11000) counts
+ *   as "already exists" instead of failing the tick.
+ * - A single failing product is logged and skipped rather than aborting the pass.
+ *
+ * @param {{ now?: Date }} [options]
+ * @returns {Promise<{products: number, created: number, existing: number,
+ *   skipped: number, invalid: number, expired: number, failed: number}>}
  */
-function startScheduler(server) {
+async function provisionReminders(options = {}) {
+  const stats = {
+    products: 0,
+    created: 0,
+    existing: 0,
+    skipped: 0,
+    invalid: 0,
+    expired: 0,
+    failed: 0,
+  }
+
+  const milestones = (Reminder.MILESTONES || [])
+    .slice()
+    .sort((a, b) => b.days - a.days)
+
+  if (milestones.length === 0) return stats
+
+  const now = options.now instanceof Date ? options.now : new Date()
+  const today = startOfDay(now)
+  const todayYmd = toYMD(today)
+
+  // Products whose warranty has already expired, or that have no expiry date
+  // at all, cannot have a milestone ahead of them, so they are never selected.
+  // warrantyExpiryDate is a YYYY-MM-DD string, so a lexicographic range query is
+  // a correct date range and naturally excludes null/empty values.
+
+  // Diagnostic count: products that can never be reminded because the server
+  // could not derive a warranty expiry date. Never treated as an error.
+  stats.invalid = await Product.countDocuments({
+    $or: [{ warrantyExpiryDate: null }, { warrantyExpiryDate: '' }],
+  }).catch(() => 0)
+
+  const products = await Product.find({ warrantyExpiryDate: { $gte: todayYmd } })
+    .select('name user warrantyExpiryDate')
+    .lean()
+
+  if (products.length === 0) return stats
+
+  // Every reminder that already covers these products, in one query, so a pass
+  // costs two queries instead of one per product per milestone. Provisioning as
+  // early as possible (no look-ahead window) also means a milestone is never
+  // lost if the service is asleep when its date arrives.
+  const existingReminders = await Reminder.find({ product: { $in: products.map((p) => p._id) } })
+    .select('userId product targetMilestone targetDate notifiedAt')
+    .lean()
+    .catch(() => [])
+
+  const existingKeys = new Set(existingReminders.map(reminderRecordKey))
+
+  for (const product of products) {
+    stats.products += 1
+
+    const expiry = parseYMD(product.warrantyExpiryDate)
+    if (!expiry) {
+      stats.invalid += 1
+      continue
+    }
+    if (startOfDay(expiry).getTime() < today.getTime()) {
+      stats.expired += 1
+      continue
+    }
+    if (!product.user) {
+      stats.failed += 1
+      continue
+    }
+
+    // Milestones that are still ahead of us, nearest-to-expiry last.
+    const upcoming = milestones.filter(
+      (milestone) =>
+        startOfDay(new Date(expiry.getTime() - milestone.days * MS_PER_DAY)).getTime() >=
+        today.getTime(),
+    )
+
+    // Nothing left ahead: send exactly one catch-up for the nearest milestone,
+    // dated today so the scheduler picks it up on this same pass.
+    const planned =
+      upcoming.length > 0
+        ? upcoming.map((milestone) => ({
+            milestone: milestone.days,
+            targetDate: new Date(expiry.getTime() - milestone.days * MS_PER_DAY),
+          }))
+        : [
+            {
+              milestone: milestones[milestones.length - 1].days,
+              targetDate: new Date(today.getTime()),
+            },
+          ]
+
+    for (const { milestone, targetDate } of planned) {
+      const key = reminderRecordKey({
+        userId: product.user,
+        product: product._id,
+        targetMilestone: milestone,
+      })
+
+      if (existingKeys.has(key)) {
+        stats.existing += 1
+        continue
+      }
+
+      try {
+        await Reminder.create({
+          userId: product.user,
+          product: product._id,
+          targetMilestone: milestone,
+          targetDate,
+          status: 'pending',
+        })
+        // Remember it here too, so two products sharing a record can never
+        // double-create within the same pass.
+        existingKeys.add(key)
+        stats.created += 1
+      } catch (error) {
+        // 11000 is the unique { user, product, milestone } index winning a race:
+        // that is duplicate prevention working, not a failure.
+        if (error && error.code === 11000) {
+          stats.existing += 1
+          continue
+        }
+        stats.failed += 1
+        console.warn(
+          `[reminder] Could not provision a reminder for product ${product._id}: ${maskEmails(
+            error instanceof Error ? error.message : String(error),
+          )}`,
+        )
+      }
+    }
+  }
+
+  return stats
+}
+
+/**
+ * Start the scheduler. Returns the cron task so it can be stopped on shutdown.
+ *
+ * @param {import('http').Server} [_server]  Unused; kept for the call site in server.js.
+ * @param {{ runNow?: boolean }} [options]  `runNow: false` skips the immediate
+ *   first pass (used by tests and by callers that want to control the timing).
+ */
+function startScheduler(_server, options = {}) {
   if (process.env.NODE_ENV === 'test') {
     return { running: false, reason: 'Scheduler disabled in test mode.' }
   }
@@ -601,18 +768,36 @@ function startScheduler(server) {
 
   const transporter = makeTransporter()
 
-  // A tick that runs long (many reminders, a slow provider) must not overlap the
-  // next one, or the same reminder could be attempted twice concurrently.
+  // Guard against two passes running at once: an overlapping pass would let the
+  // same reminder be attempted twice concurrently.
   let tickRunning = false
 
-  const task = cron.schedule(schedule, async () => {
+  /**
+   * One full pass of the automatic flow: make sure every saved product has the
+   * reminders it should have, then send whatever is due. Shared by the cron
+   * callback and the start-up pass so there is a single code path.
+   */
+  async function runPass() {
     if (tickRunning) {
       console.warn('[reminder] Previous tick is still running — skipping this one.')
-      return
+      return null
     }
 
     tickRunning = true
     try {
+      const provisioned = await provisionReminders()
+
+      if (provisioned.created > 0) {
+        console.log(
+          `[reminder] Provisioned ${provisioned.created} reminder(s) across ${provisioned.products} product(s).`,
+        )
+      }
+      if (provisioned.invalid > 0) {
+        console.warn(
+          `[reminder] ${provisioned.invalid} product(s) have no usable warranty expiry date — no reminder can be scheduled for them.`,
+        )
+      }
+
       const results = await runTick(transporter)
       const sent = results.filter((r) => r.ok).length
       const failed = results.length - sent
@@ -621,17 +806,35 @@ function startScheduler(server) {
           `[reminder] Tick complete: ${results.length} due, ${sent} sent, ${failed} failed.`,
         )
       }
+
+      return { provisioned, results }
     } catch (error) {
-      console.error('[reminder] Scheduler tick failed:', error instanceof Error ? error.message : error)
+      // A scheduler error must never take the API down.
+      console.error(
+        '[reminder] Scheduler pass failed:',
+        error instanceof Error ? error.message : error,
+      )
+      return null
     } finally {
       tickRunning = false
     }
-  })
+  }
+
+  const task = cron.schedule(schedule, () => runPass())
 
   task.start()
 
+  // First pass immediately: a freshly started or restarted service picks up
+  // due milestones now instead of waiting a whole interval. Failures are
+  // already logged inside runPass and must not block boot.
+  if (options.runNow !== false) {
+    void runPass()
+  }
+
   console.log(`[reminder] Scheduler started with schedule "${schedule}".`)
-  console.log('[reminder] To test a single reminder outside the schedule, use POST /api/reminders/send-test.')
+  console.log(
+    '[reminder] To test a single reminder outside the schedule, use POST /api/reminders/email/send-test/:id.',
+  )
 
   schedulerHandle = {
     running: true,
@@ -639,6 +842,7 @@ function startScheduler(server) {
     mode,
     schedule,
     transporter,
+    runPass,
     // Exposed for diagnostics and tests: how many attempts a reminder gets.
     maxSendAttempts: MAX_SEND_ATTEMPTS,
   }
@@ -650,6 +854,7 @@ module.exports = {
   startScheduler,
   sendReminder,
   runTick,
+  provisionReminders,
   prepareReminder,
   recordSendOutcome,
   reminderIdOf,

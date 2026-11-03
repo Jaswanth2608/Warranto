@@ -45,6 +45,7 @@ const {
   prepareReminder,
   sendReminder,
   runTick,
+  provisionReminders,
   env,
   recordSendOutcome,
   startScheduler,
@@ -790,10 +791,13 @@ test('the scheduler cannot be started twice', (t) => {
   process.env.NODE_ENV = 'production'
 
   try {
-    const first = startScheduler(null)
+    // runNow: false keeps this test from kicking off a background pass that
+    // would race the assertions (and the other tests) in this file.
+    const first = startScheduler(null, { runNow: false })
     assert.equal(first.running, true)
     assert.equal(first.schedule, env('REMINDER_SCHEDULE') || '*/30 * * * *')
     assert.equal(first.maxSendAttempts, MAX_SEND_ATTEMPTS)
+    assert.equal(typeof first.runPass, 'function', 'the scheduler exposes its pass for diagnostics')
 
     const second = startScheduler(null)
     assert.equal(second, first, 'a second start must reuse the running task, not add another')
@@ -802,4 +806,244 @@ test('the scheduler cannot be started twice', (t) => {
   } finally {
     process.env.NODE_ENV = originalNodeEnv
   }
+})
+
+// ---------------------------------------------------------------------------
+// Automatic reminder provisioning.
+//
+// These cover the part that makes the scheduled flow automatic: reminders are
+// derived from products saved through the normal add/edit flow, never duplicated,
+// and skipped when the product cannot safely be reminded.
+// ---------------------------------------------------------------------------
+
+function ymdOf(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+function todayStart() {
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  return now
+}
+
+function addDaysYmd(date, days) {
+  const copy = new Date(date.getTime())
+  copy.setDate(copy.getDate() + days)
+  return copy
+}
+
+/**
+ * A purchase date that makes the server derive an expiry `days` from today:
+ * the product is saved with a 12 month warranty, so purchase = expiry - 1 year.
+ */
+function purchaseDateForExpiryInDays(days) {
+  const expiry = addDaysYmd(todayStart(), days)
+  return ymdOf(new Date(expiry.getFullYear() - 1, expiry.getMonth(), expiry.getDate()))
+}
+
+/** Transporter that records messages instead of talking to a mail server. */
+function recordingTransporter(sent) {
+  return {
+    async sendMail(message) {
+      sent.push(message)
+      return {
+        messageId: `<fake-${sent.length}@example.example>`,
+        accepted: [message.to],
+        rejected: [],
+      }
+    },
+  }
+}
+
+test('provisionReminders creates every milestone once and never twice', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('provision')
+  const name = `Provision ${Date.now()}`
+  const product = await createProduct(alice.token, {
+    name,
+    purchaseDate: purchaseDateForExpiryInDays(120),
+    warrantyMonths: 12,
+  })
+  const productId = product.id || product._id
+  const expiryYmd = ymdOf(addDaysYmd(todayStart(), 120))
+  assert.equal(product.warrantyExpiryDate, expiryYmd, 'server should derive the expiry date we expect')
+
+  const first = await provisionReminders()
+  assert.ok(first.products >= 1, 'the saved product should be inside the provisioning window')
+
+  const created = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.equal(
+    created.length,
+    3,
+    `expected 90/30/7, got ${JSON.stringify(created.map((r) => r.targetMilestone))}`,
+  )
+  assert.deepEqual(
+    created.map((r) => r.targetMilestone).sort((a, b) => b - a),
+    [90, 30, 7],
+    'the milestones already defined by the project are 90/30/7 days',
+  )
+  assert.ok(created.every((r) => r.status === 'pending'), 'provisioned reminders start pending')
+  assert.ok(created.every((r) => r.notifiedAt == null), 'provisioning must not mark anything notified')
+
+  // Target dates come from the warranty expiry date, not from when the job ran.
+  const expiry = addDaysYmd(todayStart(), 120)
+  for (const reminder of created) {
+    const expected = addDaysYmd(expiry, -reminder.targetMilestone)
+    assert.equal(
+      ymdOf(reminder.targetDate),
+      ymdOf(expected),
+      `target date for the ${reminder.targetMilestone} day milestone`,
+    )
+  }
+
+  // Idempotent: a second pass must not duplicate any of the three.
+  await provisionReminders()
+  const after = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.equal(after.length, 3, 'provisioning must never create a second record for the same interval')
+})
+
+test('a product with less than the smallest interval left gets exactly one catch-up reminder', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('catch-up')
+  const product = await createProduct(alice.token, {
+    name: `CatchUp ${Date.now()}`,
+    purchaseDate: purchaseDateForExpiryInDays(3),
+    warrantyMonths: 12,
+  })
+  const productId = product.id || product._id
+  assert.equal(product.warrantyExpiryDate, ymdOf(addDaysYmd(todayStart(), 3)))
+
+  await provisionReminders()
+
+  const mine = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.equal(mine.length, 1, `only one catch-up reminder expected, got ${mine.length}`)
+  assert.equal(mine[0].targetMilestone, 7, 'the catch-up uses the nearest milestone')
+  assert.equal(
+    ymdOf(mine[0].targetDate),
+    ymdOf(todayStart()),
+    'the catch-up is dated today so this same pass can send it',
+  )
+})
+
+test('products with a missing or expired warranty expiry date are never scheduled', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('no-expiry')
+  const product = await createProduct(alice.token, { name: `NoExpiry ${Date.now()}` })
+  const productId = product.id || product._id
+
+  // Missing expiry — the server could not derive one.
+  await Product.updateOne({ _id: productId }, { $set: { warrantyExpiryDate: null } })
+  const stats = await provisionReminders()
+  assert.ok(
+    stats.invalid >= 1,
+    `the product without an expiry should be reported as invalid, got ${JSON.stringify(stats)}`,
+  )
+  assert.equal(
+    await Reminder.countDocuments({ userId: alice.userId, product: productId }),
+    0,
+    'no reminder may be scheduled without a valid expiry date',
+  )
+
+  // Already-expired warranty.
+  await Product.updateOne({ _id: productId }, { $set: { warrantyExpiryDate: '2020-01-01' } })
+  await provisionReminders()
+  assert.equal(
+    await Reminder.countDocuments({ userId: alice.userId, product: productId }),
+    0,
+    'an expired warranty must not be scheduled',
+  )
+})
+
+test('automatic flow: one email per reminder, sent once, then never again', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('auto-flow')
+  const name = `AutoFlow ${Date.now()}`
+  const product = await createProduct(alice.token, {
+    name,
+    purchaseDate: purchaseDateForExpiryInDays(3),
+    warrantyMonths: 12,
+  })
+  const productId = product.id || product._id
+
+  await provisionReminders()
+  const scheduled = await Reminder.find({ userId: alice.userId, product: productId }).lean()
+  assert.equal(scheduled.length, 1, 'a reminder must exist before the tick runs')
+
+  const sent = []
+  const outcomes = await runTick(recordingTransporter(sent), { testRecipient: alice.email })
+  assert.ok(Array.isArray(outcomes), 'runTick returns one outcome per due reminder')
+
+  const forThisProduct = sent.filter((message) => message.subject.includes(name))
+  assert.equal(forThisProduct.length, 1, `expected exactly one email, got ${forThisProduct.length}`)
+  assert.equal(forThisProduct[0].to, alice.email, 'the reminder goes to the account owner')
+  assert.match(forThisProduct[0].subject, /warranty/i)
+  assert.ok(forThisProduct[0].html.includes('Warranty expires'), 'the email carries the expiry date')
+  // The rendered email must never carry transport credentials. Guarded so a
+  // short placeholder value in a test cannot make the assertion vacuous.
+  const smtpSecret = process.env.SMTP_PASS
+  if (typeof smtpSecret === 'string' && smtpSecret.length >= 6) assert.ok(
+    !forThisProduct[0].html.includes(process.env.SMTP_PASS || '\u0000never'),
+    'the email must never contain the SMTP password',
+  )
+
+  const afterSend = await Reminder.findOne({ userId: alice.userId, product: productId })
+  assert.ok(afterSend.notifiedAt instanceof Date, 'a successful send marks the reminder notified')
+  assert.equal(afterSend.status, 'sent')
+  assert.equal(afterSend.notificationStatus, 'sent')
+  assert.equal(afterSend.sentCount, 1)
+
+  // The second pass must not resend the same reminder …
+  await runTick(recordingTransporter(sent), { testRecipient: alice.email })
+  assert.equal(
+    sent.filter((message) => message.subject.includes(name)).length,
+    1,
+    'no duplicate email for the same product and interval',
+  )
+
+  // … and provisioning must not create a second record either.
+  await provisionReminders()
+  assert.equal(
+    await Reminder.countDocuments({ userId: alice.userId, product: productId }),
+    1,
+    'duplicate prevention holds across provisioning and sending',
+  )
+})
+
+test('a user without a valid address is never emailed and is settled, not retried forever', async (t) => {
+  if (!dbReady) return t.skip(SKIP_REASON)
+
+  const alice = await register('no-email')
+  const name = `NoEmail ${Date.now()}`
+  const product = await createProduct(alice.token, {
+    name,
+    purchaseDate: purchaseDateForExpiryInDays(3),
+    warrantyMonths: 12,
+  })
+  const productId = product.id || product._id
+
+  await provisionReminders()
+
+  // Break the address after provisioning — the API rejects invalid addresses,
+  // so this models an account whose address later became unusable.
+  await User.updateOne({ _id: alice.userId }, { $set: { email: '' } })
+
+  const sent = []
+  await runTick(recordingTransporter(sent), { testRecipient: null })
+
+  assert.equal(
+    sent.filter((message) => message.subject.includes(name)).length,
+    0,
+    'no email may be sent when the owner has no usable address',
+  )
+
+  const reminder = await Reminder.findOne({ userId: alice.userId, product: productId })
+  assert.equal(reminder.status, 'failed', 'a permanently ineligible reminder is settled')
+  assert.ok(reminder.notifiedAt instanceof Date, 'it must not be retried on every tick')
+  assert.match(String(reminder.lastNotificationError), /email/i)
 })

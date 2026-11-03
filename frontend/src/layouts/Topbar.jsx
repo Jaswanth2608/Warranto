@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { ChevronDown, ChevronRight, LogOut, Menu, Settings, User } from 'lucide-react'
+import { ChevronDown, ChevronRight, LogOut, Menu, Search, Settings, User } from 'lucide-react'
 
 import { Dropdown, DropdownItem, DropdownSeparator } from '../components/ui'
 import NotificationMenu from '../components/notifications/NotificationMenu'
+import { OPEN_COMMAND_PALETTE_EVENT } from '../components/common/CommandPalette'
 import { LogoMark } from './Logo'
 import LiveIndicator from './LiveIndicator'
 import { NAV_ITEMS, getPageMeta, getProductIdFromPath } from '../utils/navigation'
@@ -74,6 +75,19 @@ export function Topbar({ onOpenMenu }) {
         </nav>
 
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event(OPEN_COMMAND_PALETTE_EVENT))}
+            className="mr-1 flex items-center gap-2 rounded-[7px] border border-line bg-surface px-2 py-1.5 text-[12.5px] text-muted transition hover:border-line-strong hover:text-ink"
+            aria-label="Search pages, products and actions (Ctrl K)"
+          >
+            <Search size={13} aria-hidden="true" />
+            <span className="hidden xl:inline">Search</span>
+            <kbd className="hidden rounded border border-line bg-canvas px-1 py-0.5 text-[10px] text-muted xl:inline">
+              ⌘K
+            </kbd>
+          </button>
+
           <LiveIndicator />
 
           <NotificationMenu />

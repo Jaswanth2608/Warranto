@@ -4,6 +4,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Topbar from './Topbar'
 import MobileNav from './MobileNav'
+import CommandPalette from '../components/common/CommandPalette'
 
 /** Desktop sidebar + sticky header + responsive content canvas. */
 export function AppLayout() {
@@ -34,6 +35,7 @@ export function AppLayout() {
       </div>
 
       <MobileNav open={menuOpen} onClose={() => setMenuOpen(false)} />
+      <CommandPalette />
     </div>
   )
 }
